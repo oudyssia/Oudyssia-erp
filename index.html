@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OUDYSSIA — ERP</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@300;400;600;700&family=Jost:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+
+<link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png?v=4">
+<link rel="icon" type="image/png" sizes="512x512" href="icon.png?v=4">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyBb1NWBNdIpJazKRUYQPy-mOX5_pjF30Yk",
+  authDomain: "oudyssia-36c39.firebaseapp.com",
+  projectId: "oudyssia-36c39",
+  storageBucket: "oudyssia-36c39.appspot.com",
+  messagingSenderId: "591318253496",
+  appId: "1:591318253496:web:e9665615fa1060a991d94d",
+  measurementId: "G-730DR63CXN"
+};
+firebase.initializeApp(firebaseConfig);
+window.db = firebase.firestore();
+</script>
+
+<link rel="stylesheet" href="style_updated.css">
+<style>
+/* ── DASHBOARD MONTH FILTER ── */
+.dashboard-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.dashboard-toolbar label {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+#dashboard-month-select {
+  background: var(--dark-2);
+  border: 1px solid rgba(200,169,81,0.3);
+  color: var(--gold);
+  padding: 7px 12px;
+  border-radius: var(--radius);
+  font-family: 'Jost', sans-serif;
+  font-size: 12px;
+  cursor: pointer;
+}
+#dashboard-month-select option { background: var(--dark-3); color: var(--text); }
+
+/* ── COMMANDE GROUPÉE ── */
+.cmd-lines-header {
+  display: grid;
+  grid-template-columns: 28px 1fr 90px 60px 80px 28px;
+  gap: 8px;
+  padding: 8px 24px 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.cmd-line {
+  display: grid;
+  grid-template-columns: 28px 1fr 90px 60px 80px 28px;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 24px;
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.cmd-line:last-child { border-bottom: none; }
+.cmd-line-num {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-align: center;
+}
+.cmd-line .filter-select,
+.cmd-line .search-input {
+  padding: 7px 8px;
+  font-size: 11px;
+}
+.cmd-marge {
+  font-size: 12px;
+  font-weight: 600;
+  text-align: right;
+}
+.cmd-footer {
+  padding: 12px 24px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid rgba(200,169,81,0.08);
+}
+.cmd-options {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 8px 24px 0;
+}
+.cmd-option-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.cmd-option-row label {
+  font-size: 10px;
+  color: var(--text-muted);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.cmd-option-row input,
+.cmd-option-row select {
+  background: var(--dark-3);
+  border: 1px solid var(--dark-5);
+  color: var(--text);
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-family: 'Jost', sans-serif;
+  font-size: 12px;
+}
+.modal-wide { width: 720px; }
+
+/* ── RÉASSORTS INTELLIGENT ── */
+.reassort-row.prio-urgent td    { border-left: 3px solid #E53935; }
+.reassort-row.prio-high td      { border-left: 3px solid #FF9800; }
+.reassort-row.prio-normal td    { border-left: 3px solid var(--gold); }
+.reassort-row.prio-low td       { border-left: 3px solid #5A5248; }
+.reassort-row.prio-liquidate td { border-left: 3px solid #2196F3; }
+
+.reassort-score-wrap { display:flex; flex-direction:column; align-items:center; gap:4px; min-width:44px; }
+.reassort-score-num  { font-family:'Cormorant Garamond',serif; font-size:16px; font-weight:700; color:var(--gold); line-height:1; }
+.reassort-score-bar-bg { width:40px; height:3px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden; }
+.reassort-score-bar    { height:100%; border-radius:2px; transition:width 0.4s ease; }
+.reassort-score-bar.prio-urgent    { background:#E53935; }
+.reassort-score-bar.prio-high      { background:#FF9800; }
+.reassort-score-bar.prio-normal    { background:var(--gold); }
+.reassort-score-bar.prio-low       { background:#5A5248; }
+.reassort-score-bar.prio-liquidate { background:#2196F3; }
+
+.reassort-priority-badge.prio-urgent    { background:rgba(229,57,53,0.15); color:#E57373; }
+.reassort-priority-badge.prio-high      { background:rgba(255,152,0,0.15);  color:#FFB74D; }
+.reassort-priority-badge.prio-normal    { background:rgba(200,169,81,0.15); color:var(--gold); }
+.reassort-priority-badge.prio-low       { background:rgba(90,82,72,0.2);    color:#9A9080; }
+.reassort-priority-badge.prio-liquidate { background:rgba(33,150,243,0.15); color:#64B5F6; }
+
+#reassort-filter-bar {
+  display:flex; align-items:center; gap:8px;
+  padding:12px 18px; border-bottom:1px solid rgba(200,169,81,0.08); flex-wrap:wrap;
+}
+.reassort-filter-btn {
+  background:var(--dark-3); border:1px solid var(--dark-5); color:var(--text-dim);
+  padding:5px 12px; border-radius:20px; font-family:'Jost',sans-serif; font-size:11px; cursor:pointer; transition:var(--transition);
+}
+.reassort-filter-btn:hover          { border-color:var(--gold-dim); color:var(--gold); }
+.reassort-filter-btn.active         { background:rgba(200,169,81,0.12); border-color:var(--gold); color:var(--gold); font-weight:600; }
+.reassort-filter-btn.urgent.active  { background:rgba(229,57,53,0.12); border-color:#E53935; color:#E57373; }
+.reassort-filter-btn.high.active    { background:rgba(255,152,0,0.12);  border-color:#FF9800; color:#FFB74D; }
+.reassort-filter-btn.liq.active     { background:rgba(33,150,243,0.12); border-color:#2196F3; color:#64B5F6; }
+.reassort-kpi-mini { margin-left:auto; display:flex; gap:16px; font-size:11px; color:var(--text-muted); }
+.reassort-kpi-mini strong { color:var(--text-dim); }
+</style>
+</head>
+
+<body class="auth-loading">
+<div class="auth-shell" id="auth-shell">
+  <div class="auth-card">
+    <div class="auth-logo-wrap">
+      <img src="icon.png" alt="OUDYSSIA" class="auth-logo-img">
+    </div>
+    <h1 class="auth-title">OUDYSSIA ERP</h1>
+    <p class="auth-subtitle">Connexion sécurisée</p>
+    <form id="login-form" class="auth-form">
+      <div class="auth-group">
+        <label for="login-email">Email</label>
+        <input type="email" id="login-email" autocomplete="username" required>
+      </div>
+      <div class="auth-group">
+        <label for="login-password">Mot de passe</label>
+        <input type="password" id="login-password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" class="btn-gold auth-btn">Se connecter</button>
+      <p class="auth-error" id="auth-error"></p>
+    </form>
+  </div>
+</div>
+
+<div id="app-shell" style="display:none;">
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-logo">
+    <div class="logo-mark">✦</div>
+    <div class="logo-text">
+      <span class="logo-name">OUDYSSIA</span>
+      <span class="logo-sub">ERP · Luxe</span>
+    </div>
+  </div>
+  <nav class="sidebar-nav">
+    <a href="#" class="nav-item active" data-page="dashboard"><span class="nav-icon">◈</span><span>Dashboard</span></a>
+    <a href="#" class="nav-item" data-page="produits"><span class="nav-icon">◉</span><span>Produits</span></a>
+    <a href="#" class="nav-item" data-page="ventes"><span class="nav-icon">◆</span><span>Ventes</span></a>
+    <a href="#" class="nav-item" data-page="achats"><span class="nav-icon">◇</span><span>Achats</span></a>
+    <a href="#" class="nav-item" data-page="finance"><span class="nav-icon">▣</span><span>Finance</span></a>
+    <a href="#" class="nav-item" data-page="reassorts"><span class="nav-icon">△</span><span>Réassorts</span></a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="sidebar-score" id="sidebar-score">
+      <span class="score-label">Score global</span>
+      <span class="score-val" id="global-score">—</span>
+    </div>
+  </div>
+</aside>
+
+<main class="main" id="main">
+  <header class="topbar">
+    <div class="topbar-left">
+      <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+      <h1 class="page-title" id="page-title">Dashboard</h1>
+    </div>
+    <div class="topbar-right">
+      <span class="topbar-date" id="topbar-date"></span>
+      <button class="btn-gold" onclick="openCommandeGroupee()">+ Vente</button>
+    </div>
+  </header>
+
+  <!-- DASHBOARD -->
+  <section class="page active" id="page-dashboard">
+
+    <!-- ★ NOUVEAU — Filtre mois dashboard -->
+    <div class="dashboard-toolbar">
+      <label>Période :</label>
+      <select id="dashboard-month-select" onchange="onDashboardMonthChange(this.value)"></select>
+      <span class="card-badge" id="dashboard-month-badge">Mars 2026</span>
+    </div>
+
+    <div class="kpi-grid" id="kpi-grid"></div>
+
+    <div class="charts-row">
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title">Profit journalier</span><span class="card-badge" id="dashboard-month-badge-2">Ce mois</span></div>
+        <canvas id="chart-daily" height="160"></canvas>
+      </div>
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title">CA par plateforme</span><span class="card-badge">Ce mois</span></div>
+        <canvas id="chart-platforms" height="160"></canvas>
+      </div>
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title">Qualité des marges</span><span class="card-badge">Ce mois</span></div>
+        <canvas id="chart-margins" height="160"></canvas>
+      </div>
+    </div>
+    <div class="charts-row charts-row-extra">
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title">CA mensuel</span><span class="card-badge">Historique</span></div>
+        <canvas id="chart-monthly-ca" height="160"></canvas>
+      </div>
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title">Profit mensuel</span><span class="card-badge">Historique</span></div>
+        <canvas id="chart-monthly-profit" height="160"></canvas>
+      </div>
+      <div class="card chart-card">
+        <div class="card-header"><span class="card-title">Ventes par plateforme</span><span class="card-badge">Volume</span></div>
+        <canvas id="chart-sales-platform" height="160"></canvas>
+      </div>
+    </div>
+
+    <div class="bottom-row">
+      <div class="card">
+        <div class="card-header"><span class="card-title">🏆 Top 5 produits</span><span class="card-badge">Par profit réel</span></div>
+        <div id="top-produits"></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">⚠️ Alertes stock</span><span class="card-badge" id="alert-count">0</span></div>
+        <div id="alertes-stock"></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">📅 Activité récente</span></div>
+        <div id="recent-sales"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- PRODUITS -->
+  <section class="page" id="page-produits">
+    <div class="page-toolbar">
+      <input type="text" class="search-input" id="search-produits" placeholder="Rechercher un parfum, SKU, marque..." oninput="renderProduits()">
+      <select class="filter-select" id="filter-marque" onchange="renderProduits()"><option value="">Toutes les marques</option></select>
+      <select class="filter-select" id="filter-stock" onchange="renderProduits()">
+        <option value="">Tout le stock</option>
+        <option value="disponible">En stock</option>
+        <option value="rupture">Rupture</option>
+        <option value="faible">Stock faible</option>
+      </select>
+      <!-- ★ NOUVEAU — Export produits -->
+      <button class="btn-ghost" onclick="exportProduitsCSV()">↓ CSV</button>
+      <button class="btn-gold" onclick="openModal('produit')">+ Produit</button>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="erp-table">
+          <thead><tr><th>SKU</th><th>Parfum</th><th>Marque</th><th>Achat</th><th>Vinted</th><th>Site</th><th>TikTok</th><th>Stock</th><th>Statut</th><th>Marge V</th><th>Marge S</th><th>Poids</th><th>Actions</th></tr></thead>
+          <tbody id="tbody-produits"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- VENTES -->
+  <section class="page" id="page-ventes">
+    <div class="page-toolbar">
+      <input type="text" class="search-input" id="search-ventes" placeholder="Rechercher SKU, parfum, plateforme..." oninput="renderVentes()">
+      <select class="filter-select" id="filter-plateforme" onchange="renderVentes()">
+        <option value="">Toutes plateformes</option>
+        <option value="Vinted">Vinted</option>
+        <option value="Site Oudyssia">Site Oudyssia</option>
+        <option value="TikTok">TikTok</option>
+        <option value="Direct">Direct</option>
+      </select>
+      <select class="filter-select" id="filter-mois-vente" onchange="renderVentes()">
+        <option value="">Tous les mois</option>
+      </select>
+      <!-- ★ NOUVEAU — Export ventes -->
+      <button class="btn-ghost" onclick="exportVentesCSV()">↓ CSV</button>
+      <button class="btn-gold" onclick="openCommandeGroupee()">+ Vente</button>
+    </div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="erp-table">
+          <thead><tr><th>Date</th><th>SKU</th><th>Parfum</th><th>Plateforme</th><th>Qté</th><th>Prix</th><th>Px Achat</th><th>CA</th><th>Marge Brute</th><th>Marge %</th><th>Frais Plat.</th><th>Frais Livr.</th><th>Marge Nette</th><th>Type</th><th>Actions</th></tr></thead>
+          <tbody id="tbody-ventes"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ACHATS -->
+  <section class="page" id="page-achats">
+    <div class="page-toolbar">
+      <input type="text" class="search-input" id="search-achats" placeholder="Rechercher..." oninput="renderAchats()">
+      <select class="filter-select" id="filter-cat-achat" onchange="renderAchats()">
+        <option value="">Toutes catégories</option>
+        <option value="Parfums">Parfums</option>
+        <option value="Packaging">Packaging</option>
+        <option value="Autres">Autres</option>
+      </select>
+      <button class="btn-gold" onclick="openModal('achat')">+ Achat</button>
+    </div>
+    <div class="kpi-grid" id="kpi-achats"></div>
+    <div class="card">
+      <div class="table-wrap">
+        <table class="erp-table">
+          <thead><tr><th>Date</th><th>Description</th><th>Catégorie</th><th>Montant</th><th>Actions</th></tr></thead>
+          <tbody id="tbody-achats"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- FINANCE -->
+  <section class="page" id="page-finance">
+    <div class="finance-layout">
+      <div class="finance-col">
+        <div class="card finance-card"><div class="card-header"><span class="card-title">💹 Chiffre d'Affaires</span></div><div id="finance-ca"></div></div>
+        <div class="card finance-card"><div class="card-header"><span class="card-title">🚦 Marge Brute</span></div><div id="finance-mb"></div></div>
+        <div class="card finance-card"><div class="card-header"><span class="card-title">🎯 Marge Nette</span></div><div id="finance-mn"></div></div>
+      </div>
+      <div class="finance-col">
+        <div class="card finance-card"><div class="card-header"><span class="card-title">🛒 Achats Fournisseurs</span></div><div id="finance-achats"></div></div>
+        <div class="card finance-card"><div class="card-header"><span class="card-title">💸 Charges <span class="badge-edit">✏️ saisie</span></span></div><div id="finance-charges"></div></div>
+        <div class="card finance-card highlight"><div class="card-header"><span class="card-title">💰 Bénéfice Net</span></div><div id="finance-bn"></div></div>
+      </div>
+      <div class="finance-col">
+        <div class="card finance-card"><div class="card-header"><span class="card-title">💳 Trésorerie <span class="badge-edit">✏️ saisie</span></span></div><div id="finance-tresorerie"></div></div>
+        <div class="card finance-card"><div class="card-header"><span class="card-title">📊 Plateformes</span></div><canvas id="chart-plateformes-finance" height="180"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- REASSORTS INTELLIGENT -->
+  <section class="page" id="page-reassorts">
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">📦 Réassorts — Priorité intelligente</span>
+        <span class="card-badge" id="reassort-count">—</span>
+      </div>
+      <div id="reassort-filter-bar"></div>
+      <div class="table-wrap">
+        <table class="erp-table">
+          <thead>
+            <tr>
+              <th title="Score global /100">Score</th>
+              <th>SKU</th><th>Parfum</th>
+              <th title="Stock actuel">Stock</th>
+              <th title="Unités vendues total">Ventes</th>
+              <th title="Vitesse de vente">Vélocité</th>
+              <th title="Profit généré par jour">Profit/j</th>
+              <th title="Marge moyenne">Marge%</th>
+              <th title="Jours depuis dernière vente">Dernière</th>
+              <th>Priorité</th>
+              <th>Action recommandée</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="tbody-reassorts"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- MODALS -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal()"></div>
+
+<!-- ★ NOUVEAU — MODAL COMMANDE GROUPÉE (remplace modal vente simple) -->
+<div class="modal modal-wide" id="modal-commande">
+  <div class="modal-header">
+    <h2>Nouvelle vente / commande</h2>
+    <button class="modal-close" onclick="closeModal()">✕</button>
+  </div>
+  <form onsubmit="saveCmdGroupee(event)">
+    <!-- Options communes -->
+    <div class="cmd-options">
+      <div class="cmd-option-row">
+        <label>Date</label>
+        <input type="date" id="cmd-date" required>
+      </div>
+      <div class="cmd-option-row">
+        <label>Plateforme</label>
+        <select id="cmd-plateforme" onchange="onCmdPlateformeChange()">
+          <option value="Vinted">Vinted</option>
+          <option value="Site Oudyssia">Site Oudyssia</option>
+          <option value="TikTok">TikTok</option>
+          <option value="Direct">Direct</option>
+        </select>
+      </div>
+      <div class="cmd-option-row" id="cmd-paiement-row" style="display:none">
+        <label>Paiement</label>
+        <select id="cmd-paiement" onchange="updateCmdPreview()">
+          <option value="PayPal">PayPal</option>
+          <option value="Shopify Payments">Shopify Payments</option>
+          <option value="Stripe">Stripe</option>
+        </select>
+      </div>
+      <div class="cmd-option-row" id="cmd-livraison-row" style="display:none">
+        <label>Livraison réelle (€)</label>
+        <input type="number" id="cmd-livraison" step="0.01" placeholder="0.00" style="width:80px" oninput="updateCmdPreview()">
+      </div>
+      <div class="cmd-option-row">
+        <label>Type</label>
+        <select id="cmd-type">
+          <option value="Vente">Vente</option>
+          <option value="Retour">Retour</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- En-tête colonnes -->
+    <div class="cmd-lines-header" style="margin-top:12px">
+      <span>#</span><span>Parfum</span><span>Prix (€)</span><span>Qté</span><span>Marge</span><span></span>
+    </div>
+
+    <!-- Lignes produits -->
+    <div id="cmd-lines-container"></div>
+
+    <!-- Bouton ajouter ligne -->
+    <div class="cmd-footer">
+      <button type="button" class="btn-ghost" onclick="addCmdLine()">+ Ajouter un parfum</button>
+      <div class="form-preview" id="cmd-preview" style="margin:0;flex:1"></div>
+    </div>
+
+    <div class="form-actions">
+      <button type="button" class="btn-ghost" onclick="closeModal()">Annuler</button>
+      <button type="submit" class="btn-gold">Enregistrer</button>
+    </div>
+  </form>
+</div>
+
+<!-- MODAL VENTE SIMPLE (gardé pour compatibilité) -->
+<div class="modal" id="modal-vente">
+  <div class="modal-header">
+    <h2>Nouvelle vente</h2>
+    <button class="modal-close" onclick="closeModal()">✕</button>
+  </div>
+  <form id="form-vente" onsubmit="saveVente(event)">
+    <div class="form-grid">
+      <div class="form-group"><label>Date</label><input type="date" id="v-date" required></div>
+      <div class="form-group"><label>SKU</label><select id="v-sku" required onchange="onSkuChange()"><option value="">Choisir...</option></select></div>
+      <div class="form-group"><label>Plateforme</label><select id="v-plateforme" required onchange="onPlateformeChange()"><option value="Vinted">Vinted</option><option value="Site Oudyssia">Site Oudyssia</option><option value="TikTok">TikTok</option><option value="Direct">Direct</option></select></div>
+      <div class="form-group"><label>Quantité</label><input type="number" id="v-qte" value="1" min="1" required></div>
+      <div class="form-group"><label>Prix de vente (€)</label><input type="number" id="v-prix" step="0.01" required></div>
+      <div class="form-group" id="group-paiement" style="display:none"><label>Moyen de paiement</label><select id="v-paiement"><option value="Shopify Payments">Shopify Payments</option><option value="PayPal">PayPal</option><option value="Stripe">Stripe</option></select></div>
+      <div class="form-group" id="group-commande" style="display:none"><label>N° Commande</label><input type="text" id="v-commande" placeholder="CMD-001"></div>
+      <div class="form-group" id="group-livraison-reels" style="display:none"><label>Frais livraison réels (€)</label><input type="number" id="v-livraison-reels" step="0.01"></div>
+      <div class="form-group"><label>Type</label><select id="v-type"><option value="Vente">Vente</option><option value="Retour">Retour</option></select></div>
+    </div>
+    <div class="form-preview" id="vente-preview"></div>
+    <div class="form-actions">
+      <button type="button" class="btn-ghost" onclick="closeModal()">Annuler</button>
+      <button type="submit" class="btn-gold">Enregistrer</button>
+    </div>
+  </form>
+</div>
+
+<!-- MODAL PRODUIT -->
+<div class="modal" id="modal-produit">
+  <div class="modal-header"><h2 id="modal-produit-title">Nouveau produit</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+  <form id="form-produit" onsubmit="saveProduit(event)">
+    <div class="form-grid">
+      <div class="form-group"><label>SKU</label><input type="text" id="p-sku" placeholder="ODY-059" required></div>
+      <div class="form-group"><label>Nom du Parfum</label><input type="text" id="p-nom" required></div>
+      <div class="form-group"><label>Marque / Famille</label><input type="text" id="p-marque"></div>
+      <div class="form-group"><label>Prix Achat (€)</label><input type="number" id="p-achat" step="0.01" required></div>
+      <div class="form-group"><label>Stock Initial</label><input type="number" id="p-stock" value="1" required></div>
+      <div class="form-group"><label>Prix Vinted (€)</label><input type="number" id="p-vinted" step="0.01"></div>
+      <div class="form-group"><label>Prix Site (€)</label><input type="number" id="p-site" step="0.01"></div>
+      <div class="form-group"><label>Prix TikTok (€)</label><input type="number" id="p-tiktok" step="0.01"></div>
+      <div class="form-group"><label>Poids (g)</label><input type="number" id="p-poids" step="1"></div>
+      <div class="form-group"><label>Disponible Vinted</label><select id="p-dispo-vinted"><option value="Oui">Oui</option><option value="Non">Non</option></select></div>
+      <div class="form-group"><label>Disponible Site</label><select id="p-dispo-site"><option value="Oui">Oui</option><option value="Non">Non</option></select></div>
+      <div class="form-group"><label>Notes</label><input type="text" id="p-notes"></div>
+    </div>
+    <input type="hidden" id="p-edit-idx" value="-1">
+    <div class="form-actions">
+      <button type="button" class="btn-ghost" onclick="closeModal()">Annuler</button>
+      <button type="submit" class="btn-gold">Enregistrer</button>
+    </div>
+  </form>
+</div>
+
+<!-- MODAL ACHAT -->
+<div class="modal" id="modal-achat">
+  <div class="modal-header"><h2>Nouvel achat</h2><button class="modal-close" onclick="closeModal()">✕</button></div>
+  <form id="form-achat" onsubmit="saveAchat(event)">
+    <div class="form-grid">
+      <div class="form-group"><label>Date</label><input type="date" id="a-date" required></div>
+      <div class="form-group"><label>Description</label><input type="text" id="a-desc" required></div>
+      <div class="form-group"><label>Catégorie</label><select id="a-cat"><option value="Parfums">Parfums</option><option value="Packaging">Packaging</option><option value="Autres">Autres</option></select></div>
+      <div class="form-group"><label>Montant (€)</label><input type="number" id="a-montant" step="0.01" required></div>
+    </div>
+    <input type="hidden" id="a-edit-idx" value="-1">
+    <div class="form-actions">
+      <button type="button" class="btn-ghost" onclick="closeModal()">Annuler</button>
+      <button type="submit" class="btn-gold">Enregistrer</button>
+    </div>
+  </form>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="app_v2.js"></script>
+</div>
+</body>
+</html>
