@@ -182,6 +182,24 @@ window.db = firebase.firestore();
 
 .reassort-kpi-mini { margin-left:auto; display:flex; gap:16px; font-size:11px; color:var(--text-muted); }
 .reassort-kpi-mini strong { color:var(--text-dim); }
+
+/* ── DECISION BADGES ── */
+.dec-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  font-family: 'Jost', sans-serif;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+}
+.dec-stop   { background: rgba(229,57,53,0.12);  color: #E57373; }
+.dec-order  { background: rgba(76,175,80,0.12);  color: #81C784; }
+.dec-lower  { background: rgba(255,193,7,0.12);  color: #FFD54F; }
+.dec-boost  { background: rgba(33,150,243,0.12); color: #64B5F6; }
+.dec-test   { background: rgba(156,39,176,0.12); color: #CE93D8; }
+.dec-stable { background: rgba(90,82,72,0.12);   color: #9A9080; }
 </style>
 </head>
 
@@ -419,7 +437,8 @@ window.db = firebase.firestore();
               <th title="Marge moyenne">Marge%</th>
               <th title="Jours depuis dernière vente">Dernière</th>
               <th>Priorité</th>
-              <th>Action recommandée</th>
+              <th title="Décision recommandée">Décision</th>
+              <th title="Explication contextuelle">Raison</th>
               <th></th>
             </tr>
           </thead>

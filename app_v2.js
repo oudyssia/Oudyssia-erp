@@ -1235,6 +1235,69 @@ function calcReassortScore(sku) {
   };
 }
 
+// ══════════════════════════════════════
+// DECISION ENGINE
+// Priorité : Stop > Order > Lower > Boost > Test > Stable
+// S'appuie uniquement sur les données déjà calculées dans calcReassortScore
+// ══════════════════════════════════════
+
+function calcDecision(s) {
+  // Quantité à commander : basée sur ventes 30j, min 2
+  const orderQty = Math.max(2, Math.ceil(s.recentQty > 0 ? s.recentQty * 1.5 : s.velocity * 30));
+
+  // ── 1. STOP — aucune vente récente + stock mort ──
+  if (s.recentQty === 0 && s.stock > 0 && s.score <= 40) {
+    return {
+      decision: '🔴 Arrêter le produit',
+      decisionReason: 'Aucune vente · stock immobilisé',
+      decisionCls: 'dec-stop',
+    };
+  }
+
+  // ── 2. ORDER — rupture/stock critique + vélocité prouvée + score fort ──
+  if (s.stock <= 1 && s.recentQty > 0 && s.score >= 55) {
+    return {
+      decision: `🟢 Commander ${orderQty} unités`,
+      decisionReason: `${s.stock === 0 ? 'Rupture' : 'Stock critique'} · rotation rapide · ${s.recentQty} vente(s)/30j`,
+      decisionCls: 'dec-order',
+    };
+  }
+
+  // ── 3. LOWER PRICE — stock élevé + demande faible + marge suffisante ──
+  if (s.stock >= 3 && s.recentQty === 0 && s.unitMargin >= 0.40) {
+    return {
+      decision: '🟡 Baisser le prix',
+      decisionReason: `Stock élevé (${s.stock}) · faible demande · marge suffisante`,
+      decisionCls: 'dec-lower',
+    };
+  }
+
+  // ── 4. BOOST — marge forte + score fort = produit sous-exploité ──
+  if (s.unitMargin >= 0.50 && s.score >= 65) {
+    return {
+      decision: '🔵 Booster le produit',
+      decisionReason: `Marge ${(s.unitMargin*100).toFixed(0)}% · fort potentiel`,
+      decisionCls: 'dec-boost',
+    };
+  }
+
+  // ── 5. TEST — peu de données (< 3 ventes totales) ──
+  if (s.totalQty < 3) {
+    return {
+      decision: '🟣 Tester encore',
+      decisionReason: 'Peu de données · phase test',
+      decisionCls: 'dec-test',
+    };
+  }
+
+  // ── 6. STABLE — tout le reste ──
+  return {
+    decision: '⚪ Stable',
+    decisionReason: 'Performance équilibrée',
+    decisionCls: 'dec-stable',
+  };
+}
+
 function setReassortFilter(f) { reassortFilter = f; renderReassorts(); }
 
 function renderReassorts() {
@@ -1277,7 +1340,7 @@ function renderReassorts() {
 
   const tbody = document.getElementById('tbody-reassorts');
   if (!displayed.length) {
-    tbody.innerHTML = '<tr><td colspan="12" class="no-data">✅ Aucun produit dans cette catégorie</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="13" class="no-data">✅ Aucun produit dans cette catégorie</td></tr>';
     return;
   }
 
@@ -1308,6 +1371,8 @@ function renderReassorts() {
 
     const idx = products.indexOf(getProduct(s.sku));
 
+    const dec = calcDecision(s);
+
     return `<tr class="reassort-row">
       <td style="padding:8px 12px">
         <div class="reassort-score-wrap">
@@ -1318,7 +1383,7 @@ function renderReassorts() {
         </div>
       </td>
       <td class="text-gold fw-600">${s.sku}</td>
-      <td style="max-width:155px;white-space:normal;font-size:11px;line-height:1.3">${s.nom}</td>
+      <td style="max-width:145px;white-space:normal;font-size:11px;line-height:1.3">${s.nom}</td>
       <td class="fw-600 ${s.stock===0?'text-red':s.stock<=1?'text-gold':'text-green'}">${s.stock}</td>
       <td class="text-dim">${s.totalQty > 0 ? s.totalQty : '—'}</td>
       <td>${velStr}</td>
@@ -1326,7 +1391,8 @@ function renderReassorts() {
       <td class="text-dim">${s.avgPrice > 0 ? (s.unitMargin*100).toFixed(0)+'%' : '—'}</td>
       <td>${lastStr}</td>
       <td><span class="badge reassort-priority-badge ${s.priorityCls}">${s.priority}</span></td>
-      <td style="font-size:11px;white-space:normal;max-width:165px;color:var(--text-dim);line-height:1.4">${s.reason}</td>
+      <td style="white-space:nowrap"><span class="dec-badge ${dec.decisionCls}">${dec.decision}</span></td>
+      <td style="font-size:11px;white-space:normal;max-width:150px;color:var(--text-muted);line-height:1.4">${dec.decisionReason}</td>
       <td>${s.canRestock ? `<button class="btn-icon" onclick="addReassort(${idx})" title="Ajouter stock">+</button>` : ''}</td>
     </tr>`;
   }).join('');
