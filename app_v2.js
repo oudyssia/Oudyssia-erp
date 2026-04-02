@@ -1089,8 +1089,8 @@ function updateObjectif(val) { finance.objectif = parseFloat(val)||0; saveData('
 function updateTresorerie(key, val) { finance.tresorerie[key] = parseFloat(val)||0; saveData('finance', finance); renderFinance(); }
 
 // ══════════════════════════════════════
-// 9. RÉASSORTS — SYSTÈME INTELLIGENT
-// Scoring dynamique multi-critères
+// 9. RÉASSORTS — SYSTÈME INTELLIGENT v2
+// Scoring séparé : business vs urgence stock
 // ══════════════════════════════════════
 
 let reassortFilter = 'all';
@@ -1098,60 +1098,141 @@ let reassortFilter = 'all';
 function calcReassortScore(sku) {
   const p = getProduct(sku);
   if (!p) return null;
-  const stock = getStockActuel(sku);
-  const allSales = ventes.filter(v => v.sku === sku && v.type === 'Vente');
-  const totalQty = allSales.reduce((s, v) => s + (v.qte || 1), 0);
 
-  // ── Date window ──
+  const stock      = getStockActuel(sku);
+  const allSales   = ventes.filter(v => v.sku === sku && v.type === 'Vente');
+  const totalQty   = allSales.reduce((s, v) => s + (v.qte || 1), 0);
+
+  // ── Dates ──
   const today = new Date(); today.setHours(0,0,0,0);
-  const saleDates = allSales.map(v => { try { return new Date(v.date); } catch(e) { return null; } }).filter(Boolean).sort((a,b)=>a-b);
-  const firstSale  = saleDates.length > 0 ? saleDates[0] : null;
-  const lastSale   = saleDates.length > 0 ? saleDates[saleDates.length-1] : null;
-  const daysSinceFirst = firstSale ? Math.max(1, Math.round((today-firstSale)/86400000)+1) : 30;
-  const daysSinceLast  = lastSale  ? Math.round((today-lastSale)/86400000) : 999;
+  const saleDates = allSales
+    .map(v => { try { return new Date(v.date); } catch(e) { return null; } })
+    .filter(Boolean).sort((a,b) => a - b);
+
+  const firstSale      = saleDates[0] || null;
+  const lastSale       = saleDates[saleDates.length - 1] || null;
+  const daysSinceFirst = firstSale ? Math.max(1, Math.round((today - firstSale) / 86400000) + 1) : 60;
+  const daysSinceLast  = lastSale  ? Math.round((today - lastSale) / 86400000) : 999;
+
+  // ── Recent window (last 30 days) for recency signal ──
+  const cutoff30  = new Date(today); cutoff30.setDate(cutoff30.getDate() - 30);
+  const recent30  = allSales.filter(v => { try { return new Date(v.date) >= cutoff30; } catch(e) { return false; } });
+  const recentQty = recent30.reduce((s, v) => s + (v.qte || 1), 0);
 
   // ── Core metrics ──
-  const velocity = totalQty / daysSinceFirst;
-  const daysPerUnit = totalQty > 0 ? daysSinceFirst / totalQty : 999;
+  // Velocity = units per day over active selling period (not inflated by zero periods)
+  const velocity     = totalQty / daysSinceFirst;   // u/day
+  const daysPerUnit  = totalQty > 0 ? Math.round(daysSinceFirst / totalQty) : 999;
+
+  // Total profit from all sales
   let totalProfit = 0;
   allSales.forEach(v => { const c = calcVente(v, ventes.indexOf(v)); if (c) totalProfit += c.margeB; });
-  const profitPerDay = totalProfit / daysSinceFirst;
-  const prices = [[p.prix_vinted||0],[p.prix_site||0],[p.prix_tiktok||0]].flat().filter(x=>x>0);
-  const avgPrice   = prices.length ? prices.reduce((s,x)=>s+x,0)/prices.length : 0;
+  // Cash speed = profit generated per day invested (best restock metric)
+  const cashSpeed = totalProfit / daysSinceFirst;
+
+  // Pricing
+  const prices     = [p.prix_vinted||0, p.prix_site||0, p.prix_tiktok||0].filter(x => x > 0);
+  const avgPrice   = prices.length ? prices.reduce((s,x)=>s+x,0) / prices.length : 0;
   const unitMargin = avgPrice > 0 ? (avgPrice - p.achat) / avgPrice : 0;
   const unitProfit = avgPrice > 0 ? avgPrice - p.achat : 0;
 
-  // ── Scoring (100 pts) ──
-  const s_velocity  = Math.min(25, velocity * 250);
-  const s_profitspd = Math.min(25, profitPerDay * 5);
-  const s_margin    = Math.min(20, unitMargin * 20);
-  const s_unitprof  = Math.min(10, unitProfit / 2);
-  let s_urgency = 0;
-  if      (stock === 0) s_urgency = 20;
-  else if (stock === 1) s_urgency = 14;
-  else if (stock === 2) s_urgency = 7;
-  else if (stock === 3) s_urgency = 3;
-  let penalty = 0;
-  if (totalQty === 0)                          penalty = -15;
-  else if (daysSinceLast > 60 && stock > 0)    penalty = -12;
-  else if (daysSinceLast > 30 && stock > 0)    penalty = -6;
-  else if (daysSinceLast > 14 && stock > 0)    penalty = -2;
-  const score = Math.max(0, Math.round((s_velocity+s_profitspd+s_margin+s_unitprof+s_urgency+penalty)*10)/10);
+  // ── Stock age signal ──
+  // Estimate: if stock > 0 and last sale was long ago → stock is aging
+  // Using lastSale as proxy (can't know exact reception date without purchase log)
+  const stockAging = stock > 0 && daysSinceLast > 21;   // stock sitting > 3 weeks
+  const stockStale = stock > 0 && daysSinceLast > 45;   // truly stale
 
-  // ── Classification ──
-  let priority, priorityCls, action;
-  if (totalQty === 0 && stock > 1) {
-    priority='LIQUIDER'; priorityCls='prio-liquidate'; action='🔵 Vérifier prix / promouvoir';
-  } else if (score >= 55) {
-    priority='URGENT';   priorityCls='prio-urgent';    action='🔴 Commander maintenant';
-  } else if (score >= 35) {
-    priority='HAUTE';    priorityCls='prio-high';      action='🟠 Commander cette semaine';
-  } else if (score >= 18) {
-    priority='NORMALE';  priorityCls='prio-normal';    action='🟡 À surveiller';
-  } else {
-    priority='FAIBLE';   priorityCls='prio-low';       action='⚪ Pas urgent';
+  // ════════════════════════════════════════════════
+  // BUSINESS SCORE (0–70 pts) — pure performance
+  // Separated from stock urgency intentionally
+  // ════════════════════════════════════════════════
+  const bs_velocity  = Math.min(20, velocity * 200);      // 0.1 u/day = 20pts
+  const bs_cashspeed = Math.min(20, cashSpeed * 4);        // 5€/day = 20pts
+  const bs_margin    = Math.min(15, unitMargin * 15);      // high margin = good to restock
+  const bs_unitprof  = Math.min(10, unitProfit / 2.5);     // 25€/unit = 10pts
+  const bs_recency   = recentQty > 0                       // sold recently = healthy
+    ? Math.min(5, recentQty * 2)
+    : (daysSinceLast < 14 ? 3 : 0);
+
+  // Age penalty (applies to business score only)
+  let bs_agePenalty = 0;
+  if      (stockStale)                             bs_agePenalty = -8;
+  else if (stockAging)                             bs_agePenalty = -4;
+
+  const businessScore = Math.max(0,
+    Math.round((bs_velocity + bs_cashspeed + bs_margin + bs_unitprof + bs_recency + bs_agePenalty) * 10) / 10
+  );
+
+  // ════════════════════════════════════════════════
+  // STOCK URGENCY (0–30 pts) — separate axis
+  // Only kicks in if business score justifies it
+  // ════════════════════════════════════════════════
+  let stockUrgency = 0;
+  if (totalQty > 0) {   // only give urgency if proven seller
+    if      (stock === 0) stockUrgency = 30;
+    else if (stock === 1) stockUrgency = 18;
+    else if (stock === 2) stockUrgency = 8;
+    else if (stock === 3) stockUrgency = 2;
   }
-  return { sku, nom:p.nom, marque:p.marque, achat:p.achat, stock, totalQty, totalProfit, velocity, daysPerUnit, profitPerDay, unitMargin, unitProfit, avgPrice, daysSinceLast, score, priority, priorityCls, action, hasNeverSold:totalQty===0, isVendable:p.dispo_vinted==='Oui'||p.dispo_site==='Oui'||(p.prix_tiktok||0)>0 };
+
+  const totalScore = Math.min(100, Math.round((businessScore + stockUrgency) * 10) / 10);
+
+  // ════════════════════════════════════════════════
+  // CLASSIFICATION — rule-based, not score-only
+  // Zero-sales products handled separately
+  // ════════════════════════════════════════════════
+  let priority, priorityCls, reason;
+
+  if (totalQty === 0) {
+    // Never sold — classify by stock level
+    if (stock === 0) {
+      priority='NON ACTIF'; priorityCls='prio-low';
+      reason = 'Jamais vendu · Pas de stock';
+    } else if (stock >= 3) {
+      priority='LIQUIDER'; priorityCls='prio-liquidate';
+      reason = 'Jamais vendu · Stock immobilisé';
+    } else {
+      priority='TEST'; priorityCls='prio-test';
+      reason = 'Jamais vendu · À promouvoir ou tester le prix';
+    }
+  } else if (stockStale && businessScore < 15) {
+    // Has sales history but slow + stale stock
+    priority='LIQUIDER'; priorityCls='prio-liquidate';
+    reason = `Dernière vente ${daysSinceLast}j · Rotation très lente`;
+  } else {
+    // Normal ranking by combined score
+    if      (totalScore >= 60) { priority='URGENT';  priorityCls='prio-urgent'; }
+    else if (totalScore >= 38) { priority='HAUTE';   priorityCls='prio-high'; }
+    else if (totalScore >= 20) { priority='NORMALE'; priorityCls='prio-normal'; }
+    else                       { priority='FAIBLE';  priorityCls='prio-low'; }
+
+    // Build contextual reason
+    const reasons = [];
+    if (stock === 0)             reasons.push('Rupture de stock');
+    if (recentQty > 0)           reasons.push(`${recentQty} vente(s) sur 30j`);
+    if (velocity >= 0.1)         reasons.push('Rotation rapide');
+    else if (velocity > 0)       reasons.push(`1 vente / ${daysPerUnit}j`);
+    if (unitMargin >= 0.45)      reasons.push('Marge élevée');
+    if (cashSpeed >= 1)          reasons.push(`${cashSpeed.toFixed(1)}€ cash/j`);
+    if (stockAging)              reasons.push(`Stock vieux (${daysSinceLast}j)`);
+    if (daysSinceLast > 30)      reasons.push('Vente ancienne');
+    reason = reasons.slice(0,3).join(' · ') || 'Performance standard';
+  }
+
+  // Canrestock = can add stock (not liquidate/nostock/test)
+  const canRestock = totalQty > 0 && priority !== 'LIQUIDER' && priority !== 'NON ACTIF';
+
+  return {
+    sku, nom:p.nom, marque:p.marque, achat:p.achat,
+    stock, totalQty, totalProfit,
+    velocity, daysPerUnit, cashSpeed,
+    unitMargin, unitProfit, avgPrice,
+    recentQty, daysSinceLast,
+    businessScore, stockUrgency, score: totalScore,
+    priority, priorityCls, reason,
+    canRestock,
+    hasNeverSold: totalQty === 0,
+  };
 }
 
 function setReassortFilter(f) { reassortFilter = f; renderReassorts(); }
@@ -1159,18 +1240,20 @@ function setReassortFilter(f) { reassortFilter = f; renderReassorts(); }
 function renderReassorts() {
   const scores = products
     .filter(p => p.dispo_vinted==='Oui' || p.dispo_site==='Oui' || (p.prix_tiktok||0)>0)
-    .map(p => calcReassortScore(p.sku)).filter(Boolean)
-    .sort((a,b) => {
-      const o = {URGENT:0,HAUTE:1,NORMALE:2,FAIBLE:3,LIQUIDER:4};
-      const d = (o[a.priority]??5)-(o[b.priority]??5);
+    .map(p => calcReassortScore(p.sku))
+    .filter(Boolean)
+    .sort((a, b) => {
+      const o = { URGENT:0, HAUTE:1, NORMALE:2, FAIBLE:3, TEST:4, LIQUIDER:5, 'NON ACTIF':6 };
+      const d = (o[a.priority]??7) - (o[b.priority]??7);
       return d !== 0 ? d : b.score - a.score;
     });
 
-  const urgentCount  = scores.filter(s=>s.priority==='URGENT').length;
-  const highCount    = scores.filter(s=>s.priority==='HAUTE').length;
-  const liquidCount  = scores.filter(s=>s.priority==='LIQUIDER').length;
-  const outOfStock   = scores.filter(s=>s.stock===0&&s.totalQty>0).length;
-  const neverSold    = scores.filter(s=>s.hasNeverSold).length;
+  const urgentCount  = scores.filter(s => s.priority==='URGENT').length;
+  const highCount    = scores.filter(s => s.priority==='HAUTE').length;
+  const liquidCount  = scores.filter(s => s.priority==='LIQUIDER').length;
+  const testCount    = scores.filter(s => s.priority==='TEST').length;
+  const outOfStock   = scores.filter(s => s.stock===0 && s.totalQty>0).length;
+  const neverSold    = scores.filter(s => s.hasNeverSold).length;
 
   document.getElementById('reassort-count').textContent = `${urgentCount} urgent · ${highCount} haute`;
 
@@ -1180,43 +1263,71 @@ function renderReassorts() {
     <button class="reassort-filter-btn urgent ${reassortFilter==='urgent'?'active':''}" onclick="setReassortFilter('urgent')">🔴 Urgent (${urgentCount})</button>
     <button class="reassort-filter-btn high ${reassortFilter==='high'?'active':''}" onclick="setReassortFilter('high')">🟠 Haute (${highCount})</button>
     <button class="reassort-filter-btn liq ${reassortFilter==='liquidate'?'active':''}" onclick="setReassortFilter('liquidate')">🔵 Liquider (${liquidCount})</button>
+    <button class="reassort-filter-btn test ${reassortFilter==='test'?'active':''}" onclick="setReassortFilter('test')">⚗️ Test (${testCount})</button>
     <div class="reassort-kpi-mini">
-      <span>Ruptures actives: <strong>${outOfStock}</strong></span>
+      <span>Ruptures actives: <strong class="text-red">${outOfStock}</strong></span>
       <span>Jamais vendus: <strong>${neverSold}</strong></span>
     </div>`;
 
   let displayed = scores;
-  if (reassortFilter==='urgent')   displayed = scores.filter(s=>s.priority==='URGENT');
-  if (reassortFilter==='high')     displayed = scores.filter(s=>s.priority==='HAUTE');
-  if (reassortFilter==='liquidate') displayed = scores.filter(s=>s.priority==='LIQUIDER');
+  if (reassortFilter==='urgent')   displayed = scores.filter(s => s.priority==='URGENT');
+  if (reassortFilter==='high')     displayed = scores.filter(s => s.priority==='HAUTE');
+  if (reassortFilter==='liquidate') displayed = scores.filter(s => s.priority==='LIQUIDER');
+  if (reassortFilter==='test')     displayed = scores.filter(s => s.priority==='TEST' || s.priority==='NON ACTIF');
 
   const tbody = document.getElementById('tbody-reassorts');
-  if (!displayed.length) { tbody.innerHTML='<tr><td colspan="12" class="no-data">✅ Aucun produit dans cette catégorie</td></tr>'; return; }
+  if (!displayed.length) {
+    tbody.innerHTML = '<tr><td colspan="12" class="no-data">✅ Aucun produit dans cette catégorie</td></tr>';
+    return;
+  }
 
   tbody.innerHTML = displayed.map(s => {
-    const velStr = s.velocity>0 ? (s.velocity>=0.1?`${s.velocity.toFixed(2)}u/j`:`1/${Math.round(s.daysPerUnit)}j`) : '—';
-    const ppdStr = s.profitPerDay>0 ? `${s.profitPerDay.toFixed(1)}€/j` : '—';
-    const lastStr = s.daysSinceLast<999 ? (s.daysSinceLast===0?'Auj.':`${s.daysSinceLast}j`) : '—';
-    const barW = Math.min(100, Math.round(s.score));
+    // ── Velocity: always "1 vente / Xj" format for readability ──
+    let velStr;
+    if (s.totalQty === 0)         velStr = '<span class="text-dim">—</span>';
+    else if (s.daysPerUnit <= 1)  velStr = '<span class="text-green">chaque jour</span>';
+    else if (s.daysPerUnit <= 7)  velStr = `<span class="text-green">1/${s.daysPerUnit}j</span>`;
+    else if (s.daysPerUnit <= 21) velStr = `<span style="color:var(--gold)">1/${s.daysPerUnit}j</span>`;
+    else                          velStr = `<span class="text-dim">1/${s.daysPerUnit}j</span>`;
+
+    // ── Cash speed ──
+    const cashStr = s.cashSpeed > 0
+      ? `<span class="${s.cashSpeed>=1?'text-green':''}">${s.cashSpeed.toFixed(1)}€/j</span>`
+      : '<span class="text-dim">—</span>';
+
+    // ── Last sale ──
+    const lastStr = s.daysSinceLast < 999
+      ? (s.daysSinceLast === 0 ? '<span class="text-green">Auj.</span>'
+        : s.daysSinceLast <= 7  ? `<span class="text-green">${s.daysSinceLast}j</span>`
+        : s.daysSinceLast <= 21 ? `<span style="color:var(--gold)">${s.daysSinceLast}j</span>`
+        : `<span class="text-dim">${s.daysSinceLast}j</span>`)
+      : '<span class="text-dim">—</span>';
+
+    // ── Score bar (business only, not inflated by urgency) ──
+    const barW = Math.min(100, Math.round(s.businessScore / 0.7));
+
     const idx = products.indexOf(getProduct(s.sku));
-    return `<tr class="reassort-row ${s.priorityCls}">
+
+    return `<tr class="reassort-row">
       <td style="padding:8px 12px">
         <div class="reassort-score-wrap">
-          <span class="reassort-score-num">${s.score}</span>
-          <div class="reassort-score-bar-bg"><div class="reassort-score-bar ${s.priorityCls}" style="width:${barW}%"></div></div>
+          <span class="reassort-score-num ${s.priorityCls}-text">${s.score}</span>
+          <div class="reassort-score-bar-bg">
+            <div class="reassort-score-bar ${s.priorityCls}" style="width:${barW}%"></div>
+          </div>
         </div>
       </td>
       <td class="text-gold fw-600">${s.sku}</td>
       <td style="max-width:155px;white-space:normal;font-size:11px;line-height:1.3">${s.nom}</td>
       <td class="fw-600 ${s.stock===0?'text-red':s.stock<=1?'text-gold':'text-green'}">${s.stock}</td>
-      <td class="text-dim">${s.totalQty}</td>
-      <td class="${s.velocity>0?'text-green':'text-dim'}">${velStr}</td>
-      <td class="${s.profitPerDay>0?'text-green':'text-dim'}">${ppdStr}</td>
-      <td class="text-dim">${(s.unitMargin*100).toFixed(0)}%</td>
-      <td class="text-dim">${lastStr}</td>
+      <td class="text-dim">${s.totalQty > 0 ? s.totalQty : '—'}</td>
+      <td>${velStr}</td>
+      <td>${cashStr}</td>
+      <td class="text-dim">${s.avgPrice > 0 ? (s.unitMargin*100).toFixed(0)+'%' : '—'}</td>
+      <td>${lastStr}</td>
       <td><span class="badge reassort-priority-badge ${s.priorityCls}">${s.priority}</span></td>
-      <td style="font-size:11px;white-space:normal;max-width:155px;color:var(--text-dim)">${s.action}</td>
-      <td>${s.stock<=1&&s.totalQty>0?`<button class="btn-icon" onclick="addReassort(${idx})" title="Ajouter stock">+</button>`:''}</td>
+      <td style="font-size:11px;white-space:normal;max-width:165px;color:var(--text-dim);line-height:1.4">${s.reason}</td>
+      <td>${s.canRestock ? `<button class="btn-icon" onclick="addReassort(${idx})" title="Ajouter stock">+</button>` : ''}</td>
     </tr>`;
   }).join('');
 }
