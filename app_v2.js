@@ -1242,17 +1242,13 @@ function calcReassortScore(sku) {
 // ══════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════
-// DECISION ENGINE — Level 4.5
+// DECISION ENGINE — Level 4.5 (corrected)
 // Hierarchy: Survival > Profit > Optimization > Cleanup
-// Internal states, predictive layer, false-signal protection
 // ══════════════════════════════════════════════════════════════
 
 function calcDecision(s) {
 
-  // ────────────────────────────────────────────────────────────
-  // A. INTERNAL PRODUCT STATE (influences all downstream logic)
-  // Capital efficiency = profit per day relative to investment
-  // ────────────────────────────────────────────────────────────
+  // ── A. INTERNAL PRODUCT STATE ──────────────────────────────
   const capEfficiency = s.totalProfit / Math.max(1, s.daysSinceFirst || 60);
   let productState;
   if      (capEfficiency >= 1.5 && s.unitMargin >= 0.40) productState = 'SCALABLE';
@@ -1261,80 +1257,59 @@ function calcDecision(s) {
   else if (s.daysSinceLast > 30  && s.stock > 0)          productState = 'RISKY';
   else                                                     productState = 'NEUTRAL';
 
-  // ────────────────────────────────────────────────────────────
-  // B. TREND SIGNAL (last 14 days vs prior 14 days)
-  // Uses recentQty and daysSinceLast as proxies — no new data needed
-  // ────────────────────────────────────────────────────────────
-  // Acceleration proxy: sold ≥2 in last 14d AND last sale ≤7d
+  // ── B. TREND SIGNAL ─────────────────────────────────────────
   const accelerating = s.recentQty >= 2 && s.daysSinceLast <= 7;
-  // Slowing proxy: recent sales exist but last sale > 14d ago
   const slowing      = s.recentQty > 0  && s.daysSinceLast > 14;
-  // Flat / no signal
   const trendLabel   = accelerating ? 'Demande en hausse'
-                     : slowing      ? 'Ventes en ralentissement'
-                     : '';
+                     : slowing      ? 'Ventes en ralentissement' : '';
 
-  // ────────────────────────────────────────────────────────────
-  // C. PREDICTIVE LAYER — days to stockout
-  // velocity = totalQty / daysSinceFirst (already in s)
-  // ────────────────────────────────────────────────────────────
-  const daysToStockout = (s.velocity > 0 && s.stock > 0)
-    ? Math.round(s.stock / s.velocity)
-    : (s.stock === 0 ? 0 : 999);
-
+  // ── C. PREDICTIVE — days to stockout ────────────────────────
+  const daysToStockout   = (s.velocity > 0 && s.stock > 0)
+    ? Math.round(s.stock / s.velocity) : (s.stock === 0 ? 0 : 999);
   const stockoutImminent = daysToStockout <= 5  && s.stock > 0;
   const stockoutSoon     = daysToStockout <= 14 && s.stock > 0;
 
-  // ────────────────────────────────────────────────────────────
-  // D. CONFIDENCE FACTOR (unchanged from v3 — proven logic)
-  // ────────────────────────────────────────────────────────────
+  // ── D. CONFIDENCE FACTOR ────────────────────────────────────
   const cf_score   = 0.70 + (s.score / 100) * 0.60;
   const cf_margin  = 0.90 + Math.min(0.25, s.unitMargin * 0.25);
   const cf_recency = s.daysSinceLast <= 14 ? 1.05
                    : s.daysSinceLast  > 30 ? 0.90 : 1.00;
   const confidence = Math.max(0.60, Math.min(1.35, cf_score * cf_margin * cf_recency));
 
-  // ────────────────────────────────────────────────────────────
-  // E. ORDER QUANTITY — confidence-adjusted, state-aware
-  // ────────────────────────────────────────────────────────────
-  const velLabel = s.daysPerUnit < 999 ? `1/${s.daysPerUnit}j` : null;
-  const rawQty   = s.daysPerUnit > 0 && s.daysPerUnit < 999
-    ? Math.round((30 / s.daysPerUnit) * confidence)
+  // ── E. ORDER QUANTITY — FIX: capped at 14-day coverage ──────
+  // MAX = what you'd sell in 14 days (not 30) → avoids overstock
+  // Slow products (dpu > 14) → max 2 units regardless
+  const velLabel  = s.daysPerUnit < 999 ? `1/${s.daysPerUnit}j` : null;
+  const coverDays = s.daysPerUnit > 14 ? 14 : 30; // slow sellers: 14d window only
+  const rawQty    = s.daysPerUnit > 0 && s.daysPerUnit < 999
+    ? Math.round((coverDays / s.daysPerUnit) * confidence)
     : (s.recentQty > 0 ? s.recentQty : 1);
-  // Urgency boost: imminent stockout + proven seller → +2
-  const urgencyBoost = (stockoutImminent && s.totalQty >= 3) ? 2 : 0;
-  const netQty = Math.max(1, Math.min(12, rawQty - Math.max(0, s.stock) + urgencyBoost));
+  // Hard cap: slow products (dpu > 14) → max 2 units
+  const slowCap   = s.daysPerUnit > 14 ? 2 : 12;
+  const urgencyBoost = (stockoutImminent && s.totalQty >= 3) ? 1 : 0;
+  const netQty    = Math.max(1, Math.min(slowCap, rawQty - Math.max(0, s.stock) + urgencyBoost));
 
-  // ────────────────────────────────────────────────────────────
-  // F. FALSE SIGNAL PROTECTION
-  // 1 sale ≠ success. Minimum data threshold before strong decisions.
-  // ────────────────────────────────────────────────────────────
-  const dataWeak = s.totalQty < 2;                          // < 2 sales = no trend
-  const consistent = s.totalQty >= 3 && s.recentQty >= 1;  // ≥ 3 sales + recent = real signal
+  // ── F. FALSE SIGNAL PROTECTION ──────────────────────────────
+  const dataWeak  = s.totalQty < 2;
+  // FIX: "consistent" now requires ≥3 sales AND ≥2 in last 30d (not just 1)
+  const consistent = s.totalQty >= 3 && s.recentQty >= 2;
 
-  // ────────────────────────────────────────────────────────────
-  // G. CONTEXT FLAGS
-  // ────────────────────────────────────────────────────────────
+  // ── G. CONTEXT FLAGS ────────────────────────────────────────
   const velocityExists = s.totalQty > 0 && s.daysPerUnit < 999;
   const lowSales       = s.recentQty <= 1;
   const inTestPhase    = s.totalQty < 3 && s.stock <= 2;
+  // FIX: "cash safety" — slow + low stock → do not push to order
+  const cashSafe       = s.daysPerUnit > 14 && s.stock <= 1 && s.recentQty <= 1;
 
   // ════════════════════════════════════════════════════════════
   // DECISION HIERARCHY
-  // 1. SURVIVAL (stock risk)  → ORDER if proven seller
-  // 2. CLEANUP  (dead capital)→ STOP
-  // 3. PROFIT   (opportunity) → BOOST
-  // 4. OPTIMIZATION           → LOWER PRICE
-  // 5. TEST EVOLUTION
-  // 6. STABLE   (nuanced)
   // ════════════════════════════════════════════════════════════
 
-  // ── 1. SURVIVAL — rupture imminente sur vendeur prouvé ──────
-  // Overrides boost, stable, everything except stop
+  // ── 1. SURVIVAL — rupture + vendeur prouvé (consistent requis) ──
   if (s.stock === 0 && consistent && s.score >= 45) {
-    const velPart     = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
-    const statePart   = productState === 'SCALABLE' ? ' · produit solide' : '';
-    const trendPart   = accelerating ? ' · demande en hausse' : '';
+    const velPart   = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
+    const statePart = productState === 'SCALABLE' ? ' · produit solide' : '';
+    const trendPart = accelerating ? ' · demande en hausse' : '';
     return {
       decision: `🟢 Commander ${netQty} unité${netQty > 1 ? 's' : ''}`,
       decisionReason: `Rupture · ${velPart}${statePart}${trendPart}`,
@@ -1342,10 +1317,11 @@ function calcDecision(s) {
     };
   }
 
-  // Stock critique + vélocité rapide → anticiper avant rupture
-  if (s.stock === 1 && velocityExists && s.recentQty > 0 && s.score >= 45) {
-    const velPart   = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
-    const riskPart  = stockoutImminent ? ` · rupture dans ~${daysToStockout}j` : '';
+  // Stock = 1 + vélocité rapide + demande récente confirmée
+  // FIX: cashSafe blocks aggressive order on slow+low products
+  if (s.stock === 1 && velocityExists && s.recentQty > 0 && s.score >= 45 && !cashSafe) {
+    const velPart  = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
+    const riskPart = stockoutImminent ? ` · rupture dans ~${daysToStockout}j` : '';
     return {
       decision: `🟢 Commander ${netQty} unité${netQty > 1 ? 's' : ''}`,
       decisionReason: `Stock critique · ${velPart}${riskPart}`,
@@ -1353,8 +1329,7 @@ function calcDecision(s) {
     };
   }
 
-  // ── 2. CLEANUP — capital immobilisé → STOP ──────────────────
-  // Dead stock: no recent sales + stock present + low score
+  // ── 2. CLEANUP — capital mort → STOP ────────────────────────
   const deadStock = s.recentQty === 0 && s.stock >= 2 && s.score <= 40;
   if (deadStock && productState !== 'SCALABLE') {
     const why = s.daysSinceLast < 999
@@ -1363,18 +1338,10 @@ function calcDecision(s) {
     return { decision: '🔴 Arrêter le produit', decisionReason: why, decisionCls: 'dec-stop' };
   }
 
-  // ── TEST PHASE EVOLUTION (before boost/lower, after stop) ───
+  // ── TEST PHASE — BOOST forbidden here ───────────────────────
   if (inTestPhase) {
-    // Strong signal → EXIT test, go to BOOST
-    if (!dataWeak && s.score >= 55 && s.unitMargin >= 0.45 && s.recentQty > 0) {
-      const marginPct = (s.unitMargin * 100).toFixed(0);
-      return {
-        decision: '🔵 Booster le produit',
-        decisionReason: `Signal positif · marge ${marginPct}% · ${s.recentQty} vente(s)/30j`,
-        decisionCls: 'dec-boost',
-      };
-    }
-    // Expired test: >45d no sale, OR >21d + very low score
+    // FIX: test phase can only exit to STABLE or STOP, never directly to BOOST
+    // (not enough data to justify boost — 2 sales ≠ trend)
     if (s.daysSinceLast > 45 || (s.daysSinceLast > 21 && s.score < 30)) {
       const delay = s.daysSinceLast < 999 ? `${s.daysSinceLast}j` : 'jamais';
       return {
@@ -1383,7 +1350,6 @@ function calcDecision(s) {
         decisionCls: 'dec-stop',
       };
     }
-    // Encouraging early signal → stable watch
     if (s.score >= 45 && s.recentQty > 0) {
       return {
         decision: '⚪ Stable',
@@ -1391,7 +1357,6 @@ function calcDecision(s) {
         decisionCls: 'dec-stable',
       };
     }
-    // True test: not enough data yet
     return {
       decision: '🟣 Tester encore',
       decisionReason: `${s.totalQty} vente(s) · recul insuffisant · phase test`,
@@ -1399,14 +1364,16 @@ function calcDecision(s) {
     };
   }
 
-  // ── 3. PROFIT — boost stratégique (rare, conditions strictes) ─
-  // SCALABLE state + strong margin + strong score + consistent demand
-  // BOOST is forbidden if stock ≤ 1 (incoherent: boost what you can't sell)
+  // ── 3. BOOST — rare, conditions strictes ────────────────────
+  // FIX: stock = 0 forbidden. stock ≥ 3 required (need supply to boost).
+  // FIX: consistent requires ≥2 recent (not just ≥1).
+  // FIX: score threshold raised to 70 (was 65).
   const boostAllowed = productState === 'SCALABLE'
     && s.unitMargin >= 0.50
-    && s.score >= 65
-    && consistent
-    && s.stock >= 2;
+    && s.score >= 70
+    && consistent           // ≥3 total + ≥2 recent
+    && s.stock >= 3         // FIX: must have supply (was ≥2)
+    && !slowing;            // FIX: not allowed if demand is slowing
   if (boostAllowed) {
     const marginPct = (s.unitMargin * 100).toFixed(0);
     const cashPart  = s.cashSpeed >= 1 ? ` · ${s.cashSpeed.toFixed(1)}€/j` : '';
@@ -1418,9 +1385,7 @@ function calcDecision(s) {
     };
   }
 
-  // ── 4. OPTIMIZATION — liquider le stock lent ────────────────
-  // High stock + low sales + margin absorbs discount
-  // Only for RISKY or NEUTRAL products (not SCALABLE)
+  // ── 4. LOWER PRICE ───────────────────────────────────────────
   const lowerAllowed = s.stock >= 3
     && lowSales
     && s.unitMargin >= 0.40
@@ -1434,9 +1399,9 @@ function calcDecision(s) {
     };
   }
 
-  // ── Order for good but not-yet-urgent products ───────────────
-  // Stockout soon (≤14d) + proven seller + decent score
-  if (stockoutSoon && consistent && s.score >= 38) {
+  // ── Anticipation order — stockout soon + proven (consistent ≥2 recent) ──
+  // FIX: cashSafe blocks this for slow products
+  if (stockoutSoon && consistent && s.score >= 38 && !cashSafe) {
     const velPart  = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
     const daysPart = daysToStockout < 999 ? ` · rupture dans ~${daysToStockout}j` : '';
     return {
@@ -1446,9 +1411,8 @@ function calcDecision(s) {
     };
   }
 
-  // ── 5. STABLE — 3 levels of nuance ──────────────────────────
+  // ── 5. STABLE — default for everything without a strong signal ──
 
-  // Stable + stock watch (low stock but not urgent enough to order)
   if (s.stock <= 1 && s.totalQty > 0 && s.recentQty > 0) {
     const velPart  = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
     const daysPart = daysToStockout < 999 ? ` · ~${daysToStockout}j avant rupture` : '';
@@ -1458,8 +1422,6 @@ function calcDecision(s) {
       decisionCls: 'dec-stable',
     };
   }
-
-  // Stable + active performer
   if (s.cashSpeed >= 0.5 && s.recentQty > 0) {
     const cashPart  = `${s.cashSpeed.toFixed(1)}€/j`;
     const trendPart = trendLabel ? ` · ${trendLabel}` : '';
@@ -1469,8 +1431,6 @@ function calcDecision(s) {
       decisionCls: 'dec-stable',
     };
   }
-
-  // Stable + risky idle (has stock, nothing moving)
   if (productState === 'RISKY') {
     return {
       decision: '⚪ Stable',
@@ -1478,8 +1438,6 @@ function calcDecision(s) {
       decisionCls: 'dec-stable',
     };
   }
-
-  // Default stable
   return {
     decision: '⚪ Stable',
     decisionReason: 'Performance équilibrée',
