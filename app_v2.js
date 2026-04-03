@@ -1261,9 +1261,12 @@ function calcDecision(s) {
   const veryStrongProfile = s.score >= 60 && s.unitMargin >= 0.40;
   const weakHistory = s.totalQty <= 2;
   const noStock = s.stock === 0;
+  const stockTight = s.stock <= 1;
+  const repeatedSignal = s.totalQty >= 2 && (s.recentQty >= 2 || s.daysPerUnit <= 12);
+  const moderateSignal = s.recentQty >= 2 || (s.totalQty >= 2 && s.daysPerUnit <= 15);
 
   function orderDecision(qty, reason) {
-    const safeQty = Math.max(1, Math.min(5, qty));
+    const safeQty = Math.max(1, Math.min(4, qty));
     return {
       decision: `🟢 Commander ${safeQty} unité${safeQty > 1 ? 's' : ''}`,
       decisionReason: reason,
@@ -1273,12 +1276,10 @@ function calcDecision(s) {
 
   // 1) HARD RULE: stock = 0 + recent sales => never Stable
   if (noStock && hasRecentSales) {
-    // Special case: 2 sold in 2 days, good profile => small real reorder only
     if (recentFastSignal && weakHistory && (scoreStrong || marginStrong)) {
       return orderDecision(veryStrongProfile ? 3 : 2, 'Rupture · signal récent à confirmer');
     }
 
-    // Low confidence: 1 sale OR 2 total sales only => very cautious restock
     if (confidence === 'LOW') {
       if (s.recentQty === 1 || s.totalQty === 1) {
         return orderDecision(1, 'Vente récente unique · réassort prudent');
@@ -1286,14 +1287,12 @@ function calcDecision(s) {
       return orderDecision(2, 'Rupture · faible historique · prudence cash');
     }
 
-    // Medium confidence: moderate reorder only
     if (confidence === 'MEDIUM') {
-      const qty = Math.min(4, Math.max(2, s.recentQty >= 3 ? 3 : 2));
+      const qty = Math.max(2, Math.min(3, s.recentQty >= 3 ? 3 : 2));
       return orderDecision(qty, velLabel ? `Rupture · ${velLabel} · traction confirmée` : 'Rupture · traction confirmée');
     }
 
-    // High confidence: larger reorder allowed, but still cash-safe
-    const qty = Math.min(5, Math.max(3, Math.min(5, s.recentQty)));
+    const qty = Math.max(3, Math.min(4, s.recentQty));
     return orderDecision(qty, velLabel ? `Rupture · ${velLabel} · demande confirmée` : 'Rupture · demande confirmée');
   }
 
@@ -1305,7 +1304,17 @@ function calcDecision(s) {
     return { decision: '🔴 Arrêter le produit', decisionReason: why, decisionCls: 'dec-stop' };
   }
 
-  // 3) Test phase / weak evidence products
+  // 3) Early but credible signals on tight stock -> mini reorder instead of endless test/stable
+  if (stockTight && hasRecentSales && repeatedSignal) {
+    if (s.totalQty >= 2 && s.daysPerUnit <= 7) {
+      return orderDecision(2, velLabel ? `Stock critique · ${velLabel} · mini réassort` : 'Stock critique · mini réassort');
+    }
+    if (s.totalQty >= 2 && s.daysPerUnit <= 15) {
+      return orderDecision(1, velLabel ? `Signal confirmé · ${velLabel} · prudence cash` : 'Signal confirmé · prudence cash');
+    }
+  }
+
+  // 4) Test phase / weak evidence products
   const inTestPhase = s.totalQty < 3 && s.stock <= 2;
   if (inTestPhase) {
     if (s.daysSinceLast > 45 || (s.daysSinceLast > 21 && s.score < 30)) {
@@ -1317,11 +1326,19 @@ function calcDecision(s) {
       };
     }
 
-    if (hasRecentSales && s.stock <= 1) {
+    if (hasRecentSales && s.stock <= 1 && s.totalQty === 1) {
       return {
         decision: '🟣 Tester encore',
         decisionReason: `${s.totalQty} vente(s) · signal précoce · à confirmer`,
         decisionCls: 'dec-test',
+      };
+    }
+
+    if (hasRecentSales && moderateSignal && s.stock >= 2) {
+      return {
+        decision: '⚪ Stable',
+        decisionReason: 'Signal faible · stock suffisant',
+        decisionCls: 'dec-stable',
       };
     }
 
@@ -1332,7 +1349,7 @@ function calcDecision(s) {
     };
   }
 
-  // 4) Price reduction only on real overstock + low movement
+  // 5) Price reduction only on real overstock + low movement
   if (s.stock >= 3 && s.recentQty <= 1 && s.unitMargin >= 0.40) {
     const marginPct = (s.unitMargin * 100).toFixed(0);
     return {
@@ -1342,7 +1359,7 @@ function calcDecision(s) {
     };
   }
 
-  // 5) Boost only when truly proven and already stocked
+  // 6) Boost only when truly proven and already stocked
   const boostAllowed = s.stock >= 3 && confidence === 'HIGH' && s.score >= 70 && s.unitMargin >= 0.50 && s.recentQty >= 3;
   if (boostAllowed) {
     const marginPct = (s.unitMargin * 100).toFixed(0);
@@ -1353,13 +1370,17 @@ function calcDecision(s) {
     };
   }
 
-  // 6) Anticipation reorder only when signal is confirmed, not weak
-  if (s.stock === 1 && confidence !== 'LOW' && hasRecentSales) {
-    const qty = confidence === 'HIGH' ? 3 : 2;
-    return orderDecision(qty, velLabel ? `Stock critique · ${velLabel} · anticipation` : 'Stock critique · anticipation raisonnable');
+  // 7) Anticipation reorder when signal is credible and stock is tight
+  if (s.stock === 1 && hasRecentSales) {
+    if (confidence === 'HIGH') {
+      return orderDecision(2, velLabel ? `Stock critique · ${velLabel} · anticipation` : 'Stock critique · anticipation raisonnable');
+    }
+    if (confidence === 'MEDIUM' || moderateSignal) {
+      return orderDecision(1, velLabel ? `Stock critique · ${velLabel} · anticipation prudente` : 'Stock critique · anticipation prudente');
+    }
   }
 
-  // 7) Stable / monitor for stocked items with weak or moderate signal
+  // 8) Stable / monitor for stocked items with weak or moderate signal
   if (s.stock > 0 && confidence === 'LOW') {
     return {
       decision: '⚪ Stable',
