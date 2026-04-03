@@ -1248,100 +1248,66 @@ function calcReassortScore(sku) {
 
 function calcDecision(s) {
 
-  // ── A. INTERNAL PRODUCT STATE ──────────────────────────────
-  const capEfficiency = s.totalProfit / Math.max(1, s.daysSinceFirst || 60);
-  let productState;
-  if      (capEfficiency >= 1.5 && s.unitMargin >= 0.40) productState = 'SCALABLE';
-  else if (capEfficiency >= 0.5  || s.unitMargin >= 0.45) productState = 'EFFICIENT';
-  else if (s.totalQty   === 0)                            productState = 'DEAD';
-  else if (s.daysSinceLast > 30  && s.stock > 0)          productState = 'RISKY';
-  else                                                     productState = 'NEUTRAL';
+  // Confidence based on actual sales evidence
+  let confidence = 'LOW';
+  if (s.totalQty >= 5 || (s.totalQty >= 3 && s.recentQty >= 3)) confidence = 'HIGH';
+  else if (s.totalQty >= 3) confidence = 'MEDIUM';
 
-  // ── B. TREND SIGNAL ─────────────────────────────────────────
-  const accelerating = s.recentQty >= 2 && s.daysSinceLast <= 7;
-  const slowing      = s.recentQty > 0  && s.daysSinceLast > 14;
-  const trendLabel   = accelerating ? 'Demande en hausse'
-                     : slowing      ? 'Ventes en ralentissement' : '';
+  const velLabel = s.daysPerUnit < 999 ? `1/${s.daysPerUnit}j` : null;
+  const hasRecentSales = s.recentQty > 0;
+  const recentFastSignal = s.recentQty >= 2 && s.daysSinceLast <= 2;
+  const scoreStrong = s.score >= 45;
+  const marginStrong = s.unitMargin >= 0.35;
+  const veryStrongProfile = s.score >= 60 && s.unitMargin >= 0.40;
+  const weakHistory = s.totalQty <= 2;
+  const noStock = s.stock === 0;
 
-  // ── C. PREDICTIVE — days to stockout ────────────────────────
-  const daysToStockout   = (s.velocity > 0 && s.stock > 0)
-    ? Math.round(s.stock / s.velocity) : (s.stock === 0 ? 0 : 999);
-  const stockoutImminent = daysToStockout <= 5  && s.stock > 0;
-  const stockoutSoon     = daysToStockout <= 14 && s.stock > 0;
-
-  // ── D. CONFIDENCE FACTOR ────────────────────────────────────
-  const cf_score   = 0.70 + (s.score / 100) * 0.60;
-  const cf_margin  = 0.90 + Math.min(0.25, s.unitMargin * 0.25);
-  const cf_recency = s.daysSinceLast <= 14 ? 1.05
-                   : s.daysSinceLast  > 30 ? 0.90 : 1.00;
-  const confidence = Math.max(0.60, Math.min(1.35, cf_score * cf_margin * cf_recency));
-
-  // ── E. ORDER QUANTITY — FIX: capped at 14-day coverage ──────
-  // MAX = what you'd sell in 14 days (not 30) → avoids overstock
-  // Slow products (dpu > 14) → max 2 units regardless
-  const velLabel  = s.daysPerUnit < 999 ? `1/${s.daysPerUnit}j` : null;
-  const coverDays = s.daysPerUnit > 14 ? 14 : 30; // slow sellers: 14d window only
-  const rawQty    = s.daysPerUnit > 0 && s.daysPerUnit < 999
-    ? Math.round((coverDays / s.daysPerUnit) * confidence)
-    : (s.recentQty > 0 ? s.recentQty : 1);
-  // Hard cap: slow products (dpu > 14) → max 2 units
-  const slowCap   = s.daysPerUnit > 14 ? 2 : 12;
-  const urgencyBoost = (stockoutImminent && s.totalQty >= 3) ? 1 : 0;
-  const netQty    = Math.max(1, Math.min(slowCap, rawQty - Math.max(0, s.stock) + urgencyBoost));
-
-  // ── F. FALSE SIGNAL PROTECTION ──────────────────────────────
-  const dataWeak  = s.totalQty < 2;
-  // FIX: "consistent" now requires ≥3 sales AND ≥2 in last 30d (not just 1)
-  const consistent = s.totalQty >= 3 && s.recentQty >= 2;
-
-  // ── G. CONTEXT FLAGS ────────────────────────────────────────
-  const velocityExists = s.totalQty > 0 && s.daysPerUnit < 999;
-  const lowSales       = s.recentQty <= 1;
-  const inTestPhase    = s.totalQty < 3 && s.stock <= 2;
-  // FIX: "cash safety" — slow + low stock → do not push to order
-  const cashSafe       = s.daysPerUnit > 14 && s.stock <= 1 && s.recentQty <= 1;
-
-  // ════════════════════════════════════════════════════════════
-  // DECISION HIERARCHY
-  // ════════════════════════════════════════════════════════════
-
-  // ── 1. SURVIVAL — rupture + vendeur prouvé (consistent requis) ──
-  if (s.stock === 0 && consistent && s.score >= 45) {
-    const velPart   = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
-    const statePart = productState === 'SCALABLE' ? ' · produit solide' : '';
-    const trendPart = accelerating ? ' · demande en hausse' : '';
+  function orderDecision(qty, reason) {
+    const safeQty = Math.max(1, Math.min(5, qty));
     return {
-      decision: `🟢 Commander ${netQty} unité${netQty > 1 ? 's' : ''}`,
-      decisionReason: `Rupture · ${velPart}${statePart}${trendPart}`,
+      decision: `🟢 Commander ${safeQty} unité${safeQty > 1 ? 's' : ''}`,
+      decisionReason: reason,
       decisionCls: 'dec-order',
     };
   }
 
-  // Stock = 1 + vélocité rapide + demande récente confirmée
-  // FIX: cashSafe blocks aggressive order on slow+low products
-  if (s.stock === 1 && velocityExists && s.recentQty > 0 && s.score >= 45 && !cashSafe) {
-    const velPart  = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
-    const riskPart = stockoutImminent ? ` · rupture dans ~${daysToStockout}j` : '';
-    return {
-      decision: `🟢 Commander ${netQty} unité${netQty > 1 ? 's' : ''}`,
-      decisionReason: `Stock critique · ${velPart}${riskPart}`,
-      decisionCls: 'dec-order',
-    };
+  // 1) HARD RULE: stock = 0 + recent sales => never Stable
+  if (noStock && hasRecentSales) {
+    // Special case: 2 sold in 2 days, good profile => small real reorder only
+    if (recentFastSignal && weakHistory && (scoreStrong || marginStrong)) {
+      return orderDecision(veryStrongProfile ? 3 : 2, 'Rupture · signal récent à confirmer');
+    }
+
+    // Low confidence: 1 sale OR 2 total sales only => very cautious restock
+    if (confidence === 'LOW') {
+      if (s.recentQty === 1 || s.totalQty === 1) {
+        return orderDecision(1, 'Vente récente unique · réassort prudent');
+      }
+      return orderDecision(2, 'Rupture · faible historique · prudence cash');
+    }
+
+    // Medium confidence: moderate reorder only
+    if (confidence === 'MEDIUM') {
+      const qty = Math.min(4, Math.max(2, s.recentQty >= 3 ? 3 : 2));
+      return orderDecision(qty, velLabel ? `Rupture · ${velLabel} · traction confirmée` : 'Rupture · traction confirmée');
+    }
+
+    // High confidence: larger reorder allowed, but still cash-safe
+    const qty = Math.min(5, Math.max(3, Math.min(5, s.recentQty)));
+    return orderDecision(qty, velLabel ? `Rupture · ${velLabel} · demande confirmée` : 'Rupture · demande confirmée');
   }
 
-  // ── 2. CLEANUP — capital mort → STOP ────────────────────────
-  const deadStock = s.recentQty === 0 && s.stock >= 2 && s.score <= 40;
-  if (deadStock && productState !== 'SCALABLE') {
+  // 2) Dead stock / cleanup
+  if (s.recentQty === 0 && s.stock >= 2 && s.score <= 40) {
     const why = s.daysSinceLast < 999
       ? `Aucune vente depuis ${s.daysSinceLast}j · capital immobilisé`
       : 'Jamais vendu · stock mort';
     return { decision: '🔴 Arrêter le produit', decisionReason: why, decisionCls: 'dec-stop' };
   }
 
-  // ── TEST PHASE — BOOST forbidden here ───────────────────────
+  // 3) Test phase / weak evidence products
+  const inTestPhase = s.totalQty < 3 && s.stock <= 2;
   if (inTestPhase) {
-    // FIX: test phase can only exit to STABLE or STOP, never directly to BOOST
-    // (not enough data to justify boost — 2 sales ≠ trend)
     if (s.daysSinceLast > 45 || (s.daysSinceLast > 21 && s.score < 30)) {
       const delay = s.daysSinceLast < 999 ? `${s.daysSinceLast}j` : 'jamais';
       return {
@@ -1350,13 +1316,15 @@ function calcDecision(s) {
         decisionCls: 'dec-stop',
       };
     }
-    if (s.score >= 45 && s.recentQty > 0) {
+
+    if (hasRecentSales && s.stock <= 1) {
       return {
-        decision: '⚪ Stable',
-        decisionReason: `${s.totalQty} vente(s) · signal précoce · à surveiller`,
-        decisionCls: 'dec-stable',
+        decision: '🟣 Tester encore',
+        decisionReason: `${s.totalQty} vente(s) · signal précoce · à confirmer`,
+        decisionCls: 'dec-test',
       };
     }
+
     return {
       decision: '🟣 Tester encore',
       decisionReason: `${s.totalQty} vente(s) · recul insuffisant · phase test`,
@@ -1364,80 +1332,50 @@ function calcDecision(s) {
     };
   }
 
-  // ── 3. BOOST — rare, conditions strictes ────────────────────
-  // FIX: stock = 0 forbidden. stock ≥ 3 required (need supply to boost).
-  // FIX: consistent requires ≥2 recent (not just ≥1).
-  // FIX: score threshold raised to 70 (was 65).
-  const boostAllowed = productState === 'SCALABLE'
-    && s.unitMargin >= 0.50
-    && s.score >= 70
-    && consistent           // ≥3 total + ≥2 recent
-    && s.stock >= 3         // FIX: must have supply (was ≥2)
-    && !slowing;            // FIX: not allowed if demand is slowing
-  if (boostAllowed) {
-    const marginPct = (s.unitMargin * 100).toFixed(0);
-    const cashPart  = s.cashSpeed >= 1 ? ` · ${s.cashSpeed.toFixed(1)}€/j` : '';
-    const trendPart = accelerating ? ' · en accélération' : '';
-    return {
-      decision: '🔵 Booster le produit',
-      decisionReason: `ROI élevé · marge ${marginPct}%${cashPart}${trendPart}`,
-      decisionCls: 'dec-boost',
-    };
-  }
-
-  // ── 4. LOWER PRICE ───────────────────────────────────────────
-  const lowerAllowed = s.stock >= 3
-    && lowSales
-    && s.unitMargin >= 0.40
-    && productState !== 'SCALABLE';
-  if (lowerAllowed) {
+  // 4) Price reduction only on real overstock + low movement
+  if (s.stock >= 3 && s.recentQty <= 1 && s.unitMargin >= 0.40) {
     const marginPct = (s.unitMargin * 100).toFixed(0);
     return {
       decision: '🟡 Baisser le prix',
-      decisionReason: `Stock élevé (${s.stock}) · ventes lentes · marge ${marginPct}% absorbe la remise`,
+      decisionReason: `Stock élevé (${s.stock}) · ventes lentes · marge ${marginPct}%`,
       decisionCls: 'dec-lower',
     };
   }
 
-  // ── Anticipation order — stockout soon + proven (consistent ≥2 recent) ──
-  // FIX: cashSafe blocks this for slow products
-  if (stockoutSoon && consistent && s.score >= 38 && !cashSafe) {
-    const velPart  = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
-    const daysPart = daysToStockout < 999 ? ` · rupture dans ~${daysToStockout}j` : '';
+  // 5) Boost only when truly proven and already stocked
+  const boostAllowed = s.stock >= 3 && confidence === 'HIGH' && s.score >= 70 && s.unitMargin >= 0.50 && s.recentQty >= 3;
+  if (boostAllowed) {
+    const marginPct = (s.unitMargin * 100).toFixed(0);
     return {
-      decision: `🟢 Commander ${netQty} unité${netQty > 1 ? 's' : ''}`,
-      decisionReason: `${velPart}${daysPart}`,
-      decisionCls: 'dec-order',
+      decision: '🔵 Booster le produit',
+      decisionReason: `Demande confirmée · marge ${marginPct}% · stock suffisant`,
+      decisionCls: 'dec-boost',
     };
   }
 
-  // ── 5. STABLE — default for everything without a strong signal ──
+  // 6) Anticipation reorder only when signal is confirmed, not weak
+  if (s.stock === 1 && confidence !== 'LOW' && hasRecentSales) {
+    const qty = confidence === 'HIGH' ? 3 : 2;
+    return orderDecision(qty, velLabel ? `Stock critique · ${velLabel} · anticipation` : 'Stock critique · anticipation raisonnable');
+  }
 
-  if (s.stock <= 1 && s.totalQty > 0 && s.recentQty > 0) {
-    const velPart  = velLabel ? `rotation ${velLabel}` : `${s.recentQty} vente(s)/30j`;
-    const daysPart = daysToStockout < 999 ? ` · ~${daysToStockout}j avant rupture` : '';
+  // 7) Stable / monitor for stocked items with weak or moderate signal
+  if (s.stock > 0 && confidence === 'LOW') {
     return {
       decision: '⚪ Stable',
-      decisionReason: `Stock faible · ${velPart}${daysPart}`,
+      decisionReason: hasRecentSales ? 'Signal faible · stock suffisant' : 'Pas de signal fort',
       decisionCls: 'dec-stable',
     };
   }
-  if (s.cashSpeed >= 0.5 && s.recentQty > 0) {
-    const cashPart  = `${s.cashSpeed.toFixed(1)}€/j`;
-    const trendPart = trendLabel ? ` · ${trendLabel}` : '';
+
+  if (s.stock > 0 && confidence === 'MEDIUM') {
     return {
       decision: '⚪ Stable',
-      decisionReason: `${cashPart} · ${s.recentQty} vente(s)/30j${trendPart}`,
+      decisionReason: hasRecentSales ? 'Demande modérée · stock suffisant' : 'Performance équilibrée',
       decisionCls: 'dec-stable',
     };
   }
-  if (productState === 'RISKY') {
-    return {
-      decision: '⚪ Stable',
-      decisionReason: `Inactivité (${s.daysSinceLast}j) · à surveiller`,
-      decisionCls: 'dec-stable',
-    };
-  }
+
   return {
     decision: '⚪ Stable',
     decisionReason: 'Performance équilibrée',
