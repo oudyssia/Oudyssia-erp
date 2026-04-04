@@ -564,8 +564,8 @@ function renderChartMonthlyCA() {
   const caData   = nextMonthCA ? [...labels.map(m => Math.round((byMonth[m].ca||0)*100)/100), null] : labels.map(m => Math.round((byMonth[m].ca||0)*100)/100);
   const caProj   = nextMonthCA ? [...labels.map(() => null), Math.round((byMonth[labels[labels.length-1]]?.ca||0)*100)/100] : [];
   charts.monthlyCA = new Chart(ctx, { type: 'line', data: { labels: caLabels, datasets: [
-    { data: caData, borderColor: '#C8A951', backgroundColor: 'rgba(200,169,81,0.10)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#E8D08A', pointBorderColor: '#C8A951', pointBorderWidth: 1.5 },
-    ...(nextMonthCA && caProj.some(v=>v!==null) ? [{ data: caProj, borderColor: 'rgba(200,169,81,0.40)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,4], pointRadius: 3, pointBackgroundColor: 'rgba(200,169,81,0.4)', label: 'Prévision' }] : [])
+    { label: 'Réel', data: caData, borderColor: '#C8A951', backgroundColor: 'rgba(200,169,81,0.10)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#E8D08A', pointBorderColor: '#C8A951', pointBorderWidth: 1.5 },
+    ...(nextMonthCA && caProj.some(v=>v!==null) ? [{ label: 'Prévision', data: caProj, borderColor: 'rgba(232,208,138,0.60)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,5], pointRadius: 3, pointBackgroundColor: 'rgba(232,208,138,0.55)' }] : [])
   ] }, options: { ...chartOptions('€'), plugins: { ...chartOptions('€').plugins, legend: { display: nextMonthCA, labels: { color: '#9A9080', font: {size:10} } } } } });
 }
 
@@ -580,8 +580,8 @@ function renderChartMonthlyProfit() {
   const prData   = nextMonthPR ? [...labels.map(m => Math.round((byMonth[m].profit||0)*100)/100), null] : labels.map(m => Math.round((byMonth[m].profit||0)*100)/100);
   const prProj   = nextMonthPR ? [...labels.map(() => null), Math.round((byMonth[labels[labels.length-1]]?.profit||0)*100)/100] : [];
   charts.monthlyProfit = new Chart(ctx, { type: 'line', data: { labels: prLabels, datasets: [
-    { data: prData, borderColor: '#4ADE80', backgroundColor: 'rgba(74,222,128,0.08)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#4ADE80', pointBorderColor: '#22C55E', pointBorderWidth: 1.5 },
-    ...(nextMonthPR && prProj.some(v=>v!==null) ? [{ data: prProj, borderColor: 'rgba(74,222,128,0.35)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,4], pointRadius: 3, pointBackgroundColor: 'rgba(74,222,128,0.35)', label: 'Prévision' }] : [])
+    { label: 'Réel', data: prData, borderColor: '#4ADE80', backgroundColor: 'rgba(74,222,128,0.08)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#4ADE80', pointBorderColor: '#22C55E', pointBorderWidth: 1.5 },
+    ...(nextMonthPR && prProj.some(v=>v!==null) ? [{ label: 'Prévision', data: prProj, borderColor: 'rgba(134,239,172,0.55)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,5], pointRadius: 3, pointBackgroundColor: 'rgba(134,239,172,0.45)' }] : [])
   ] }, options: { ...chartOptions('€'), plugins: { ...chartOptions('€').plugins, legend: { display: nextMonthPR, labels: { color: '#9A9080', font: {size:10} } } } } });
 }
 
@@ -615,7 +615,7 @@ function chartOptions(unit='') {
     },
     scales: {
       x: { display: true, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, ticks: { color: '#6B6560', font:{size:10} } },
-      y: { display: true, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, ticks: { color: '#6B6560', font:{size:10} } }
+      y: { beginAtZero: true, display: true, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, ticks: { color: '#6B6560', font:{size:10} } }
     }
   };
 }
