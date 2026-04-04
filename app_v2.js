@@ -526,7 +526,7 @@ function renderChartDaily(mois) {
   if (charts.daily) charts.daily.destroy();
   charts.daily = new Chart(ctx, {
     type: 'bar',
-    data: { labels: days.map(d => d.split('-')[2]), datasets: [{ data: days.map(d => Math.round(byDay[d]*100)/100), backgroundColor: 'rgba(200,169,81,0.6)', borderColor: '#C8A951', borderWidth: 1, borderRadius: 4 }] },
+    data: { labels: days.map(d => d.split('-')[2]), datasets: [{ data: days.map(d => Math.round(byDay[d]*100)/100), backgroundColor: days.map(d => Math.round(byDay[d]*100)/100 > 0 ? 'rgba(200,169,81,0.70)' : 'rgba(220,38,38,0.45)'), borderColor: days.map(d => Math.round(byDay[d]*100)/100 > 0 ? '#C8A951' : '#DC2626'), borderWidth: 1, borderRadius: 5 }] },
     options: chartOptions('€')
   });
 }
@@ -537,7 +537,7 @@ function renderChartPlatforms(mois) {
   const data = plats.map(p => ventes.filter(v => v.date && v.date.startsWith(m) && v.plateforme === p && v.type !== 'Retour').reduce((s,v) => s + v.prix*v.qte, 0));
   const ctx = document.getElementById('chart-platforms');
   if (charts.platforms) charts.platforms.destroy();
-  charts.platforms = new Chart(ctx, { type: 'doughnut', data: { labels: plats, datasets: [{ data, backgroundColor: ['rgba(33,150,243,0.7)','rgba(200,169,81,0.7)','rgba(229,57,53,0.7)','rgba(76,175,80,0.7)'], borderColor: '#161616', borderWidth: 2 }] }, options: { ...chartOptions('€'), plugins: { legend: { position: 'bottom', labels: { color: '#9A9080', font: {size:11} } } } } });
+  charts.platforms = new Chart(ctx, { type: 'doughnut', data: { labels: plats, datasets: [{ data, backgroundColor: ['rgba(33,150,243,0.80)','rgba(200,169,81,0.80)','rgba(139,92,246,0.80)','rgba(74,222,128,0.75)'], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions('€'), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:11}, padding: 14, boxWidth: 12 } } } } });
 }
 
 function renderChartMargins(mois) {
@@ -549,7 +549,7 @@ function renderChartMargins(mois) {
   });
   const ctx = document.getElementById('chart-margins');
   if (charts.margins) charts.margins.destroy();
-  charts.margins = new Chart(ctx, { type: 'pie', data: { labels: Object.keys(counts), datasets: [{ data: Object.values(counts), backgroundColor: ['rgba(76,175,80,0.7)','rgba(100,200,100,0.7)','rgba(33,150,243,0.7)','rgba(255,152,0,0.7)','rgba(229,57,53,0.5)','rgba(229,57,53,0.7)'], borderColor: '#161616', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#9A9080', font: {size:10} } } } } });
+  charts.margins = new Chart(ctx, { type: 'pie', data: { labels: Object.keys(counts), datasets: [{ data: Object.values(counts), backgroundColor: ['rgba(22,163,74,0.85)','rgba(74,222,128,0.80)','rgba(34,197,94,0.80)','rgba(234,179,8,0.80)','rgba(249,115,22,0.80)','rgba(220,38,38,0.85)'], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:10}, padding: 12, boxWidth: 12 } } } } });
 }
 
 function renderChartMonthlyCA() {
@@ -558,7 +558,15 @@ function renderChartMonthlyCA() {
   const ctx = document.getElementById('chart-monthly-ca');
   if (!ctx) return;
   if (charts.monthlyCA) charts.monthlyCA.destroy();
-  charts.monthlyCA = new Chart(ctx, { type: 'line', data: { labels: labels.map(formatMonth), datasets: [{ data: labels.map(m => Math.round((byMonth[m].ca||0)*100)/100), borderColor: '#C8A951', backgroundColor: 'rgba(200,169,81,0.12)', tension: 0.35, fill: true, pointRadius: 3, pointBackgroundColor: '#E8D08A' }] }, options: chartOptions('€') });
+  // Projection: add next month as dashed line with null value
+  const nextMonthCA = labels.length > 0 ? (() => { const [y,mo] = labels[labels.length-1].split('-'); const nm = mo==='12' ? `${+y+1}-01` : `${y}-${String(+mo+1).padStart(2,'0')}`; return nm; })() : null;
+  const caLabels = nextMonthCA ? [...labels.map(formatMonth), formatMonth(nextMonthCA)] : labels.map(formatMonth);
+  const caData   = nextMonthCA ? [...labels.map(m => Math.round((byMonth[m].ca||0)*100)/100), null] : labels.map(m => Math.round((byMonth[m].ca||0)*100)/100);
+  const caProj   = nextMonthCA ? [...labels.map(() => null), Math.round((byMonth[labels[labels.length-1]]?.ca||0)*100)/100] : [];
+  charts.monthlyCA = new Chart(ctx, { type: 'line', data: { labels: caLabels, datasets: [
+    { data: caData, borderColor: '#C8A951', backgroundColor: 'rgba(200,169,81,0.10)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#E8D08A', pointBorderColor: '#C8A951', pointBorderWidth: 1.5 },
+    ...(nextMonthCA && caProj.some(v=>v!==null) ? [{ data: caProj, borderColor: 'rgba(200,169,81,0.40)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,4], pointRadius: 3, pointBackgroundColor: 'rgba(200,169,81,0.4)', label: 'Prévision' }] : [])
+  ] }, options: { ...chartOptions('€'), plugins: { ...chartOptions('€').plugins, legend: { display: nextMonthCA, labels: { color: '#9A9080', font: {size:10} } } } } });
 }
 
 function renderChartMonthlyProfit() {
@@ -567,7 +575,14 @@ function renderChartMonthlyProfit() {
   const ctx = document.getElementById('chart-monthly-profit');
   if (!ctx) return;
   if (charts.monthlyProfit) charts.monthlyProfit.destroy();
-  charts.monthlyProfit = new Chart(ctx, { type: 'line', data: { labels: labels.map(formatMonth), datasets: [{ data: labels.map(m => Math.round((byMonth[m].profit||0)*100)/100), borderColor: '#81C784', backgroundColor: 'rgba(129,199,132,0.12)', tension: 0.35, fill: true, pointRadius: 3, pointBackgroundColor: '#81C784' }] }, options: chartOptions('€') });
+  const nextMonthPR = labels.length > 0 ? (() => { const [y,mo] = labels[labels.length-1].split('-'); const nm = mo==='12' ? `${+y+1}-01` : `${y}-${String(+mo+1).padStart(2,'0')}`; return nm; })() : null;
+  const prLabels = nextMonthPR ? [...labels.map(formatMonth), formatMonth(nextMonthPR)] : labels.map(formatMonth);
+  const prData   = nextMonthPR ? [...labels.map(m => Math.round((byMonth[m].profit||0)*100)/100), null] : labels.map(m => Math.round((byMonth[m].profit||0)*100)/100);
+  const prProj   = nextMonthPR ? [...labels.map(() => null), Math.round((byMonth[labels[labels.length-1]]?.profit||0)*100)/100] : [];
+  charts.monthlyProfit = new Chart(ctx, { type: 'line', data: { labels: prLabels, datasets: [
+    { data: prData, borderColor: '#4ADE80', backgroundColor: 'rgba(74,222,128,0.08)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#4ADE80', pointBorderColor: '#22C55E', pointBorderWidth: 1.5 },
+    ...(nextMonthPR && prProj.some(v=>v!==null) ? [{ data: prProj, borderColor: 'rgba(74,222,128,0.35)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,4], pointRadius: 3, pointBackgroundColor: 'rgba(74,222,128,0.35)', label: 'Prévision' }] : [])
+  ] }, options: { ...chartOptions('€'), plugins: { ...chartOptions('€').plugins, legend: { display: nextMonthPR, labels: { color: '#9A9080', font: {size:10} } } } } });
 }
 
 function renderChartSalesPlatform() {
@@ -577,11 +592,32 @@ function renderChartSalesPlatform() {
   const ctx = document.getElementById('chart-sales-platform');
   if (!ctx) return;
   if (charts.salesPlatform) charts.salesPlatform.destroy();
-  charts.salesPlatform = new Chart(ctx, { type: 'doughnut', data: { labels, datasets: [{ data: labels.map(l => counts[l]||0), backgroundColor: ['rgba(33,150,243,0.7)','rgba(200,169,81,0.7)','rgba(229,57,53,0.7)','rgba(76,175,80,0.7)'], borderColor: '#161616', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#9A9080', font: {size:11} } } } } });
+    const platColorMap = { Vinted:'rgba(33,150,243,0.80)', 'Site Oudyssia':'rgba(200,169,81,0.80)', TikTok:'rgba(139,92,246,0.80)', Direct:'rgba(74,222,128,0.75)' };
+  charts.salesPlatform = new Chart(ctx, { type: 'doughnut', data: { labels, datasets: [{ data: labels.map(l => counts[l]||0), backgroundColor: labels.map(l => platColorMap[l]||'rgba(90,82,72,0.7)'), borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:11}, padding: 14, boxWidth: 12 } } } } });
 }
 
 function chartOptions(unit='') {
-  return { responsive: true, plugins: { legend: { display: false }, tooltip: { backgroundColor: '#1E1E1E', borderColor: 'rgba(200,169,81,0.3)', borderWidth: 1, titleColor: '#C8A951', bodyColor: '#E8E0CC', callbacks: unit ? { label: ctx => `${ctx.parsed.y || ctx.parsed}${unit}` } : {} } }, scales: { x: { display: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#5A5248', font:{size:10} } }, y: { display: true, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#5A5248', font:{size:10} } } } };
+  return {
+    responsive: true,
+    animation: { duration: 400 },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#1A1A1A',
+        borderColor: 'rgba(200,169,81,0.25)',
+        borderWidth: 1,
+        titleColor: '#C8A951',
+        bodyColor: '#E5E7EB',
+        padding: 10,
+        cornerRadius: 6,
+        callbacks: unit ? { label: ctx => ` ${(ctx.parsed.y ?? ctx.parsed).toLocaleString('fr-FR')}${unit}` } : {}
+      }
+    },
+    scales: {
+      x: { display: true, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, ticks: { color: '#6B6560', font:{size:10} } },
+      y: { display: true, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, ticks: { color: '#6B6560', font:{size:10} } }
+    }
+  };
 }
 
 function renderTopProduits(mois) {
@@ -620,7 +656,7 @@ function renderRecentSales() {
   }).join('');
 }
 
-function platColor(p) { return {Vinted:'#64B5F6','Site Oudyssia':'#C8A951',TikTok:'#E57373',Direct:'#81C784'}[p] || '#9A9080'; }
+function platColor(p) { return {Vinted:'#60A5FA','Site Oudyssia':'#C8A951',TikTok:'#A78BFA',Direct:'#4ADE80'}[p] || '#9A9080'; }
 
 // ══════════════════════════════════════
 // 5. PRODUITS
