@@ -693,7 +693,14 @@ function renderChartPlatforms(mois) {
   const data = plats.map(p => ventes.filter(v => v.date && v.date.startsWith(m) && v.plateforme === p && v.type !== 'Retour').reduce((s,v) => s + v.prix*v.qte, 0));
   const ctx = document.getElementById('chart-platforms');
   if (charts.platforms) charts.platforms.destroy();
-  charts.platforms = new Chart(ctx, { type: 'doughnut', data: { labels: plats, datasets: [{ data, backgroundColor: ['rgba(33,150,243,0.80)','rgba(200,169,81,0.80)','rgba(139,92,246,0.80)','rgba(74,222,128,0.75)'], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions('€'), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:11}, padding: 14, boxWidth: 12 } } } } });
+  charts.platforms = new Chart(ctx, { type: 'doughnut', data: { labels: plats, datasets: [{ data, backgroundColor: [
+  '#C9A15C',
+  '#2C3E50',
+  '#D8A7B1',
+  '#6D597A',
+  '#C46A2D',
+  '#5A1E2B'
+], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions('€'), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:11}, padding: 14, boxWidth: 12 } } } } });
 }
 
 function renderChartMargins(mois) {
@@ -705,7 +712,14 @@ function renderChartMargins(mois) {
   });
   const ctx = document.getElementById('chart-margins');
   if (charts.margins) charts.margins.destroy();
-  charts.margins = new Chart(ctx, { type: 'pie', data: { labels: Object.keys(counts), datasets: [{ data: Object.values(counts), backgroundColor: ['#C9A15C','#5FB3A2','#D8A7B1','#C9A227','#D97B4D','#6E2132'], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:10}, padding: 12, boxWidth: 12 } } } } });
+  charts.margins = new Chart(ctx, { type: 'pie', data: { labels: Object.keys(counts), datasets: [{ data: Object.values(counts), backgroundColor: [
+  '#C9A15C',
+  '#2C3E50',
+  '#D8A7B1',
+  '#6D597A',
+  '#C46A2D',
+  '#5A1E2B'
+], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:10}, padding: 12, boxWidth: 12 } } } } });
 }
 
 
