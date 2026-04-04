@@ -352,6 +352,7 @@ function calcKPIs(mois) {
   return { ca, profit, margeNette, units, margeP, joursAvecVente, joursSansVente };
 }
 
+
 function getMonthlySalesStats() {
   const byMonth = {};
   ventes.forEach((v, idx) => {
@@ -366,6 +367,161 @@ function getMonthlySalesStats() {
   });
   return byMonth;
 }
+
+// ══════════════════════════════════════
+// SMART FORECAST & REASSORT HELPERS
+// Forecast next month based on previous month + current month
+// without touching date system or month filtering logic
+// ══════════════════════════════════════
+
+function getMonthShift(monthStr, shift) {
+  const [y, m] = monthStr.split('-').map(Number);
+  const d = new Date(y, m - 1 + shift, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,'0')}`;
+}
+
+function getForecastMonthContext() {
+  const current = getCurrentMonth();
+  return {
+    previousMonth: getMonthShift(current, -1),
+    currentMonth: current,
+    nextMonth: getMonthShift(current, 1),
+  };
+}
+
+function getSalesQtyForMonth(sku, monthStr) {
+  return ventes
+    .filter(v => v.sku === sku && v.type === 'Vente' && v.date && v.date.startsWith(monthStr))
+    .reduce((s, v) => s + (v.qte || 1), 0);
+}
+
+function getRecentSalesQty(sku, days = 30) {
+  const now = new Date();
+  now.setHours(23,59,59,999);
+  return ventes
+    .filter(v => {
+      if (v.sku !== sku || v.type !== 'Vente' || !v.date) return false;
+      const d = new Date(v.date + 'T12:00:00');
+      return ((now - d) / 86400000) <= days;
+    })
+    .reduce((s, v) => s + (v.qte || 1), 0);
+}
+
+function getSellingPriceReference(p) {
+  const available = [];
+  if ((p.dispo_site === 'Oui') && (p.prix_site || 0) > 0) available.push(p.prix_site);
+  if ((p.dispo_vinted === 'Oui') && (p.prix_vinted || 0) > 0) available.push(p.prix_vinted);
+  if ((p.prix_tiktok || 0) > 0) available.push(p.prix_tiktok);
+
+  if ((p.dispo_site === 'Oui') && (p.prix_site || 0) > 0) return p.prix_site;
+  if ((p.dispo_vinted === 'Oui') && (p.prix_vinted || 0) > 0) return p.prix_vinted;
+  if ((p.prix_tiktok || 0) > 0) return p.prix_tiktok;
+
+  const fallback = [p.prix_site || 0, p.prix_vinted || 0, p.prix_tiktok || 0].filter(x => x > 0);
+  return fallback.length ? fallback.reduce((a,b)=>a+b,0) / fallback.length : 0;
+}
+
+function getUnitProfitReference(p) {
+  return Math.max(0, getSellingPriceReference(p) - (p.achat || 0));
+}
+
+function getPurchasePriceTier(achat) {
+  if ((achat || 0) > 30) return 'high';
+  if ((achat || 0) < 15) return 'low';
+  return 'mid';
+}
+
+function getSuggestedReorderForSku(sku) {
+  const p = getProduct(sku);
+  if (!p) return {qty:0, confidence:'LOW', coverageDays:999, weightedUnits:0, stock:getStockActuel(sku), recentQty:0};
+
+  const stock = Math.max(0, getStockActuel(sku));
+  const { previousMonth, currentMonth } = getForecastMonthContext();
+  const marchUnits = getSalesQtyForMonth(sku, previousMonth);
+  const aprilUnits = getSalesQtyForMonth(sku, currentMonth);
+  const totalTwoMonths = marchUnits + aprilUnits;
+  const recentQty = getRecentSalesQty(sku, 30);
+
+  const weightedUnits = (marchUnits * 0.4) + (aprilUnits * 0.6);
+  const dailyVelocity = weightedUnits / 30;
+  const coverageDays = dailyVelocity > 0 ? (stock / dailyVelocity) : 999;
+
+  let confidence = 'LOW';
+  if (totalTwoMonths >= 5 || (marchUnits > 0 && aprilUnits > 0 && totalTwoMonths >= 4)) confidence = 'HIGH';
+  else if (totalTwoMonths >= 3) confidence = 'MEDIUM';
+  else if (totalTwoMonths >= 1) confidence = 'LOW';
+
+  let qty = 0;
+
+  if (stock === 0 && totalTwoMonths > 0) {
+    if (confidence === 'LOW') qty = recentQty >= 2 ? 2 : 1;
+    if (confidence === 'MEDIUM') qty = 2;
+    if (confidence === 'HIGH') qty = recentQty >= 2 ? 3 : 2;
+  } else if (stock === 1) {
+    if (dailyVelocity > (1/14)) qty = 1;
+    if (dailyVelocity > (1/7) && confidence !== 'LOW') qty = 2;
+  } else if (coverageDays < 7) {
+    if (confidence === 'LOW') qty = recentQty >= 1 ? 1 : 0;
+    if (confidence === 'MEDIUM') qty = 2;
+    if (confidence === 'HIGH') qty = 3;
+  } else if (coverageDays < 14) {
+    if (confidence === 'HIGH') qty = 2;
+    else if (confidence === 'MEDIUM' && recentQty >= 2) qty = 1;
+  }
+
+  const achatTier = getPurchasePriceTier(p.achat || 0);
+  if (qty > 0) {
+    if (achatTier === 'high') qty -= 1;
+    if (achatTier === 'low' && confidence === 'HIGH') qty += 1;
+  }
+
+  if (stock === 0 && totalTwoMonths > 0) qty = Math.max(1, qty);
+  if (confidence === 'LOW') qty = Math.min(qty, recentQty >= 2 ? 2 : 1);
+  if (confidence === 'MEDIUM') qty = Math.min(qty, 3);
+  if (confidence === 'HIGH') qty = Math.min(qty, 4);
+
+  qty = Math.max(0, Math.round(qty));
+
+  return { qty, confidence, coverageDays, weightedUnits, stock, recentQty, marchUnits, aprilUnits, totalTwoMonths };
+}
+
+function getNextMonthForecastBySku() {
+  const { nextMonth } = getForecastMonthContext();
+  const forecast = {};
+  products.forEach(p => {
+    const rec = getSuggestedReorderForSku(p.sku);
+    const stock = Math.max(0, getStockActuel(p.sku));
+    const realisticUnits = Math.min(rec.weightedUnits, stock + rec.qty);
+    const units = (rec.totalTwoMonths === 0 || (stock === 0 && rec.qty === 0)) ? 0 : realisticUnits;
+    const priceRef = getSellingPriceReference(p);
+    const unitProfitRef = Math.max(0, priceRef - (p.achat || 0));
+    forecast[p.sku] = {
+      month: nextMonth,
+      units,
+      revenue: units * priceRef,
+      profit: units * unitProfitRef,
+      reorderQty: rec.qty,
+      confidence: rec.confidence,
+      coverageDays: rec.coverageDays,
+      weightedUnits: rec.weightedUnits,
+      priceRef,
+      unitProfitRef,
+    };
+  });
+  return forecast;
+}
+
+function getNextMonthForecastTotals() {
+  const bySku = getNextMonthForecastBySku();
+  const totals = Object.values(bySku).reduce((acc, x) => {
+    acc.revenue += x.revenue || 0;
+    acc.profit += x.profit || 0;
+    acc.units += x.units || 0;
+    return acc;
+  }, { revenue:0, profit:0, units:0 });
+  return { bySku, ...totals };
+}
+
 
 function getDashboardExtras(mois) {
   const m = mois || getCurrentMonth();
@@ -549,8 +705,9 @@ function renderChartMargins(mois) {
   });
   const ctx = document.getElementById('chart-margins');
   if (charts.margins) charts.margins.destroy();
-  charts.margins = new Chart(ctx, { type: 'pie', data: { labels: Object.keys(counts), datasets: [{ data: Object.values(counts), backgroundColor: ['rgba(22,163,74,0.85)','rgba(74,222,128,0.80)','rgba(34,197,94,0.80)','rgba(234,179,8,0.80)','rgba(249,115,22,0.80)','rgba(220,38,38,0.85)'], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:10}, padding: 12, boxWidth: 12 } } } } });
+  charts.margins = new Chart(ctx, { type: 'pie', data: { labels: Object.keys(counts), datasets: [{ data: Object.values(counts), backgroundColor: ['#C9A15C','#5FB3A2','#D8A7B1','#C9A227','#D97B4D','#6E2132'], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:10}, padding: 12, boxWidth: 12 } } } } });
 }
+
 
 function renderChartMonthlyCA() {
   const byMonth = getMonthlySalesStats();
@@ -558,16 +715,58 @@ function renderChartMonthlyCA() {
   const ctx = document.getElementById('chart-monthly-ca');
   if (!ctx) return;
   if (charts.monthlyCA) charts.monthlyCA.destroy();
-  // Projection: add next month as dashed line with null value
-  const nextMonthCA = labels.length > 0 ? (() => { const [y,mo] = labels[labels.length-1].split('-'); const nm = mo==='12' ? `${+y+1}-01` : `${y}-${String(+mo+1).padStart(2,'0')}`; return nm; })() : null;
-  const caLabels = nextMonthCA ? [...labels.map(formatMonth), formatMonth(nextMonthCA)] : labels.map(formatMonth);
-  const caData   = nextMonthCA ? [...labels.map(m => Math.round((byMonth[m].ca||0)*100)/100), null] : labels.map(m => Math.round((byMonth[m].ca||0)*100)/100);
-  const caProj   = nextMonthCA ? [...labels.map(() => null), Math.round((byMonth[labels[labels.length-1]]?.ca||0)*100)/100] : [];
-  charts.monthlyCA = new Chart(ctx, { type: 'line', data: { labels: caLabels, datasets: [
-    { label: 'Réel', data: caData, borderColor: '#C8A951', backgroundColor: 'rgba(200,169,81,0.10)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#E8D08A', pointBorderColor: '#C8A951', pointBorderWidth: 1.5 },
-    ...(nextMonthCA && caProj.some(v=>v!==null) ? [{ label: 'Prévision', data: caProj, borderColor: 'rgba(232,208,138,0.60)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,5], pointRadius: 3, pointBackgroundColor: 'rgba(232,208,138,0.55)' }] : [])
-  ] }, options: { ...chartOptions('€'), plugins: { ...chartOptions('€').plugins, legend: { display: nextMonthCA, labels: { color: '#9A9080', font: {size:10} } } } } });
+
+  const forecast = getNextMonthForecastTotals();
+  const { nextMonth } = getForecastMonthContext();
+
+  const chartLabels = [...labels, nextMonth].map(formatMonth);
+  const realData = [...labels.map(m => Math.round((byMonth[m].ca || 0) * 100) / 100), null];
+  const forecastData = [...labels.map(() => null), Math.round((forecast.revenue || 0) * 100) / 100];
+
+  charts.monthlyCA = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: chartLabels,
+      datasets: [
+        {
+          label: 'Réel',
+          data: realData,
+          borderColor: '#C8A951',
+          backgroundColor: 'rgba(200,169,81,0.10)',
+          tension: 0.4,
+          fill: true,
+          borderWidth: 2,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#E8D08A',
+          pointBorderColor: '#C8A951',
+          pointBorderWidth: 1.5
+        },
+        {
+          label: 'Prévision',
+          data: forecastData,
+          borderColor: 'rgba(232,208,138,0.60)',
+          backgroundColor: 'transparent',
+          tension: 0.4,
+          fill: false,
+          borderWidth: 1.5,
+          borderDash: [5,5],
+          pointRadius: 3,
+          pointBackgroundColor: 'rgba(232,208,138,0.55)'
+        }
+      ]
+    },
+    options: {
+      ...chartOptions('€'),
+      plugins: {
+        ...chartOptions('€').plugins,
+        legend: { display: true, labels: { color: '#9A9080', font: {size:10} } }
+      }
+    }
+  });
 }
+
+
 
 function renderChartMonthlyProfit() {
   const byMonth = getMonthlySalesStats();
@@ -575,15 +774,57 @@ function renderChartMonthlyProfit() {
   const ctx = document.getElementById('chart-monthly-profit');
   if (!ctx) return;
   if (charts.monthlyProfit) charts.monthlyProfit.destroy();
-  const nextMonthPR = labels.length > 0 ? (() => { const [y,mo] = labels[labels.length-1].split('-'); const nm = mo==='12' ? `${+y+1}-01` : `${y}-${String(+mo+1).padStart(2,'0')}`; return nm; })() : null;
-  const prLabels = nextMonthPR ? [...labels.map(formatMonth), formatMonth(nextMonthPR)] : labels.map(formatMonth);
-  const prData   = nextMonthPR ? [...labels.map(m => Math.round((byMonth[m].profit||0)*100)/100), null] : labels.map(m => Math.round((byMonth[m].profit||0)*100)/100);
-  const prProj   = nextMonthPR ? [...labels.map(() => null), Math.round((byMonth[labels[labels.length-1]]?.profit||0)*100)/100] : [];
-  charts.monthlyProfit = new Chart(ctx, { type: 'line', data: { labels: prLabels, datasets: [
-    { label: 'Réel', data: prData, borderColor: '#4ADE80', backgroundColor: 'rgba(74,222,128,0.08)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#4ADE80', pointBorderColor: '#22C55E', pointBorderWidth: 1.5 },
-    ...(nextMonthPR && prProj.some(v=>v!==null) ? [{ label: 'Prévision', data: prProj, borderColor: 'rgba(134,239,172,0.55)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,5], pointRadius: 3, pointBackgroundColor: 'rgba(134,239,172,0.45)' }] : [])
-  ] }, options: { ...chartOptions('€'), plugins: { ...chartOptions('€').plugins, legend: { display: nextMonthPR, labels: { color: '#9A9080', font: {size:10} } } } } });
+
+  const forecast = getNextMonthForecastTotals();
+  const { nextMonth } = getForecastMonthContext();
+
+  const chartLabels = [...labels, nextMonth].map(formatMonth);
+  const realData = [...labels.map(m => Math.round((byMonth[m].profit || 0) * 100) / 100), null];
+  const forecastData = [...labels.map(() => null), Math.round((forecast.profit || 0) * 100) / 100];
+
+  charts.monthlyProfit = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: chartLabels,
+      datasets: [
+        {
+          label: 'Réel',
+          data: realData,
+          borderColor: '#4ADE80',
+          backgroundColor: 'rgba(74,222,128,0.08)',
+          tension: 0.4,
+          fill: true,
+          borderWidth: 2,
+          pointRadius: 4,
+          pointHoverRadius: 6,
+          pointBackgroundColor: '#4ADE80',
+          pointBorderColor: '#22C55E',
+          pointBorderWidth: 1.5
+        },
+        {
+          label: 'Prévision',
+          data: forecastData,
+          borderColor: 'rgba(134,239,172,0.55)',
+          backgroundColor: 'transparent',
+          tension: 0.4,
+          fill: false,
+          borderWidth: 1.5,
+          borderDash: [5,5],
+          pointRadius: 3,
+          pointBackgroundColor: 'rgba(134,239,172,0.45)'
+        }
+      ]
+    },
+    options: {
+      ...chartOptions('€'),
+      plugins: {
+        ...chartOptions('€').plugins,
+        legend: { display: true, labels: { color: '#9A9080', font: {size:10} } }
+      }
+    }
+  });
 }
+
 
 function renderChartSalesPlatform() {
   const counts = {};
@@ -615,7 +856,7 @@ function chartOptions(unit='') {
     },
     scales: {
       x: { display: true, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, ticks: { color: '#6B6560', font:{size:10} } },
-      y: { beginAtZero: true, display: true, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, ticks: { color: '#6B6560', font:{size:10} } }
+      y: { beginAtZero: true, min: 0, display: true, grid: { color: 'rgba(255,255,255,0.04)', drawBorder: false }, ticks: { color: '#6B6560', font:{size:10} } }
     }
   };
 }
@@ -1131,131 +1372,88 @@ function updateTresorerie(key, val) { finance.tresorerie[key] = parseFloat(val)|
 
 let reassortFilter = 'all';
 
+
 function calcReassortScore(sku) {
   const p = getProduct(sku);
   if (!p) return null;
 
-  const stock      = getStockActuel(sku);
-  const allSales   = ventes.filter(v => v.sku === sku && v.type === 'Vente');
-  const totalQty   = allSales.reduce((s, v) => s + (v.qte || 1), 0);
+  const stock = Math.max(0, getStockActuel(sku));
+  const allSales = ventes.filter(v => v.sku === sku && v.type === 'Vente');
+  const totalQty = allSales.reduce((s, v) => s + (v.qte || 1), 0);
 
-  // ── Dates ──
   const today = new Date(); today.setHours(0,0,0,0);
   const saleDates = allSales
-    .map(v => { try { return new Date(v.date); } catch(e) { return null; } })
-    .filter(Boolean).sort((a,b) => a - b);
+    .map(v => { try { return new Date(v.date + 'T12:00:00'); } catch(e) { return null; } })
+    .filter(Boolean)
+    .sort((a,b) => a - b);
 
-  const firstSale      = saleDates[0] || null;
-  const lastSale       = saleDates[saleDates.length - 1] || null;
+  const firstSale = saleDates[0] || null;
+  const lastSale = saleDates[saleDates.length - 1] || null;
   const daysSinceFirst = firstSale ? Math.max(1, Math.round((today - firstSale) / 86400000) + 1) : 60;
-  const daysSinceLast  = lastSale  ? Math.round((today - lastSale) / 86400000) : 999;
+  const daysSinceLast = lastSale ? Math.round((today - lastSale) / 86400000) : 999;
 
-  // ── Recent window (last 30 days) for recency signal ──
-  const cutoff30  = new Date(today); cutoff30.setDate(cutoff30.getDate() - 30);
-  const recent30  = allSales.filter(v => { try { return new Date(v.date) >= cutoff30; } catch(e) { return false; } });
-  const recentQty = recent30.reduce((s, v) => s + (v.qte || 1), 0);
+  const rec = getSuggestedReorderForSku(sku);
+  const velocity = rec.weightedUnits / 30; // weighted monthly demand converted to daily velocity
+  const daysPerUnit = velocity > 0 ? Math.max(1, Math.round(1 / velocity)) : 999;
+  const coverageDays = rec.coverageDays;
 
-  // ── Core metrics ──
-  // Velocity = units per day over active selling period (not inflated by zero periods)
-  const velocity     = totalQty / daysSinceFirst;   // u/day
-  const daysPerUnit  = totalQty > 0 ? Math.round(daysSinceFirst / totalQty) : 999;
-
-  // Total profit from all sales
   let totalProfit = 0;
   allSales.forEach(v => { const c = calcVente(v, ventes.indexOf(v)); if (c) totalProfit += c.margeB; });
-  // Cash speed = profit generated per day invested (best restock metric)
-  const cashSpeed = totalProfit / daysSinceFirst;
 
-  // Pricing
-  const prices     = [p.prix_vinted||0, p.prix_site||0, p.prix_tiktok||0].filter(x => x > 0);
-  const avgPrice   = prices.length ? prices.reduce((s,x)=>s+x,0) / prices.length : 0;
-  const unitMargin = avgPrice > 0 ? (avgPrice - p.achat) / avgPrice : 0;
-  const unitProfit = avgPrice > 0 ? avgPrice - p.achat : 0;
+  const avgPrice = getSellingPriceReference(p);
+  const unitMargin = avgPrice > 0 ? (avgPrice - (p.achat || 0)) / avgPrice : 0;
+  const unitProfit = avgPrice > 0 ? avgPrice - (p.achat || 0) : 0;
+  const cashSpeed = velocity > 0 ? velocity * unitProfit : 0;
 
-  // ── Stock age signal ──
-  // Estimate: if stock > 0 and last sale was long ago → stock is aging
-  // Using lastSale as proxy (can't know exact reception date without purchase log)
-  const stockAging = stock > 0 && daysSinceLast > 21;   // stock sitting > 3 weeks
-  const stockStale = stock > 0 && daysSinceLast > 45;   // truly stale
+  const businessScore =
+    Math.min(18, rec.weightedUnits * 6) +
+    Math.min(14, rec.recentQty * 3) +
+    Math.min(14, cashSpeed * 2.5) +
+    Math.min(10, Math.max(0, unitMargin) * 20) +
+    Math.min(8, Math.max(0, unitProfit) / 3) +
+    (rec.confidence === 'HIGH' ? 6 : rec.confidence === 'MEDIUM' ? 3 : 0);
 
-  // ════════════════════════════════════════════════
-  // BUSINESS SCORE (0–70 pts) — pure performance
-  // Separated from stock urgency intentionally
-  // ════════════════════════════════════════════════
-  const bs_velocity  = Math.min(20, velocity * 200);      // 0.1 u/day = 20pts
-  const bs_cashspeed = Math.min(20, cashSpeed * 4);        // 5€/day = 20pts
-  const bs_margin    = Math.min(15, unitMargin * 15);      // high margin = good to restock
-  const bs_unitprof  = Math.min(10, unitProfit / 2.5);     // 25€/unit = 10pts
-  const bs_recency   = recentQty > 0                       // sold recently = healthy
-    ? Math.min(5, recentQty * 2)
-    : (daysSinceLast < 14 ? 3 : 0);
-
-  // Age penalty (applies to business score only)
-  let bs_agePenalty = 0;
-  if      (stockStale)                             bs_agePenalty = -8;
-  else if (stockAging)                             bs_agePenalty = -4;
-
-  const businessScore = Math.max(0,
-    Math.round((bs_velocity + bs_cashspeed + bs_margin + bs_unitprof + bs_recency + bs_agePenalty) * 10) / 10
-  );
-
-  // ════════════════════════════════════════════════
-  // STOCK URGENCY (0–30 pts) — separate axis
-  // Only kicks in if business score justifies it
-  // ════════════════════════════════════════════════
   let stockUrgency = 0;
-  if (totalQty > 0) {   // only give urgency if proven seller
-    if      (stock === 0) stockUrgency = 30;
-    else if (stock === 1) stockUrgency = 18;
-    else if (stock === 2) stockUrgency = 8;
-    else if (stock === 3) stockUrgency = 2;
+  if (totalQty > 0) {
+    if (stock === 0) stockUrgency = 30;
+    else if (coverageDays < 7) stockUrgency = 18;
+    else if (coverageDays < 14) stockUrgency = 8;
+    else if (stock <= 3) stockUrgency = 2;
   }
 
-  const totalScore = Math.min(100, Math.round((businessScore + stockUrgency) * 10) / 10);
+  let stockAgePenalty = 0;
+  if (stock > 0 && daysSinceLast > 45) stockAgePenalty = -8;
+  else if (stock > 0 && daysSinceLast > 21 && rec.recentQty === 0) stockAgePenalty = -4;
 
-  // ════════════════════════════════════════════════
-  // CLASSIFICATION — rule-based, not score-only
-  // Zero-sales products handled separately
-  // ════════════════════════════════════════════════
+  const totalScore = Math.max(0, Math.min(100, Math.round((businessScore + stockUrgency + stockAgePenalty) * 10) / 10));
+
   let priority, priorityCls, reason;
-
   if (totalQty === 0) {
-    // Never sold — classify by stock level
     if (stock === 0) {
-      priority='NON ACTIF'; priorityCls='prio-low';
-      reason = 'Jamais vendu · Pas de stock';
+      priority = 'NON ACTIF'; priorityCls = 'prio-low'; reason = 'Jamais vendu · Pas de stock';
     } else if (stock >= 3) {
-      priority='LIQUIDER'; priorityCls='prio-liquidate';
-      reason = 'Jamais vendu · Stock immobilisé';
+      priority = 'LIQUIDER'; priorityCls = 'prio-liquidate'; reason = 'Jamais vendu · Stock immobilisé';
     } else {
-      priority='TEST'; priorityCls='prio-test';
-      reason = 'Jamais vendu · À promouvoir ou tester le prix';
+      priority = 'TEST'; priorityCls = 'prio-test'; reason = 'Jamais vendu · Tester le produit';
     }
-  } else if (stockStale && businessScore < 15) {
-    // Has sales history but slow + stale stock
-    priority='LIQUIDER'; priorityCls='prio-liquidate';
-    reason = `Dernière vente ${daysSinceLast}j · Rotation très lente`;
+  } else if (stock > 0 && daysSinceLast > 45 && rec.recentQty === 0) {
+    priority = 'LIQUIDER'; priorityCls = 'prio-liquidate'; reason = `Dernière vente ${daysSinceLast}j · Stock lent`;
   } else {
-    // Normal ranking by combined score
     if      (totalScore >= 60) { priority='URGENT';  priorityCls='prio-urgent'; }
     else if (totalScore >= 38) { priority='HAUTE';   priorityCls='prio-high'; }
     else if (totalScore >= 20) { priority='NORMALE'; priorityCls='prio-normal'; }
     else                       { priority='FAIBLE';  priorityCls='prio-low'; }
 
-    // Build contextual reason
     const reasons = [];
-    if (stock === 0)             reasons.push('Rupture de stock');
-    if (recentQty > 0)           reasons.push(`${recentQty} vente(s) sur 30j`);
-    if (velocity >= 0.1)         reasons.push('Rotation rapide');
-    else if (velocity > 0)       reasons.push(`1 vente / ${daysPerUnit}j`);
-    if (unitMargin >= 0.45)      reasons.push('Marge élevée');
-    if (cashSpeed >= 1)          reasons.push(`${cashSpeed.toFixed(1)}€ cash/j`);
-    if (stockAging)              reasons.push(`Stock vieux (${daysSinceLast}j)`);
-    if (daysSinceLast > 30)      reasons.push('Vente ancienne');
+    if (stock === 0) reasons.push('Rupture');
+    if (rec.recentQty > 0) reasons.push(`${rec.recentQty} vente(s)/30j`);
+    if (coverageDays < 999) reasons.push(`couverture ${Math.round(coverageDays)}j`);
+    if (rec.confidence === 'HIGH') reasons.push('signal fort');
+    else if (rec.confidence === 'MEDIUM') reasons.push('signal moyen');
+    if ((p.achat || 0) > 30) reasons.push('achat élevé');
     reason = reasons.slice(0,3).join(' · ') || 'Performance standard';
   }
 
-  // Canrestock = can add stock (not liquidate/nostock/test)
   const canRestock = totalQty > 0 && priority !== 'LIQUIDER' && priority !== 'NON ACTIF';
 
   return {
@@ -1263,13 +1461,22 @@ function calcReassortScore(sku) {
     stock, totalQty, totalProfit,
     velocity, daysPerUnit, cashSpeed,
     unitMargin, unitProfit, avgPrice,
-    recentQty, daysSinceLast, daysSinceFirst,
-    businessScore, stockUrgency, score: totalScore,
+    recentQty: rec.recentQty, daysSinceLast, daysSinceFirst,
+    businessScore: Math.round(businessScore * 10) / 10,
+    stockUrgency,
+    score: totalScore,
     priority, priorityCls, reason,
     canRestock,
     hasNeverSold: totalQty === 0,
+    coverageDays,
+    confidence: rec.confidence,
+    suggestedQty: rec.qty,
+    weightedUnits: rec.weightedUnits,
+    marchUnits: rec.marchUnits,
+    aprilUnits: rec.aprilUnits,
   };
 }
+
 
 // ══════════════════════════════════════
 // DECISION ENGINE
@@ -1282,208 +1489,91 @@ function calcReassortScore(sku) {
 // Hierarchy: Survival > Profit > Optimization > Cleanup
 // ══════════════════════════════════════════════════════════════
 
+
 function calcDecision(s) {
+  const total = s.totalQty || 0;
+  const stock = s.stock;
+  const r30 = s.recentQty || 0;
+  const dpu = s.daysPerUnit;
+  const dsl = s.daysSinceLast;
+  const margin = s.unitMargin || 0;
+  const marginPct = (margin * 100).toFixed(0);
+  const velLabel = dpu < 999 ? `1/${dpu}j` : null;
+  const daysLeft = s.coverageDays < 999 ? Math.round(s.coverageDays) : 999;
+  const qty = Math.max(0, s.suggestedQty || 0);
 
-  // ── Données brutes ──────────────────────────────────────────
-  const total      = s.totalQty || 0;
-  const stock      = s.stock;
-  const r30        = s.recentQty || 0;
-  const dpu        = s.daysPerUnit;       // jours entre chaque vente (999 = inconnu)
-  const dsl        = s.daysSinceLast;     // jours depuis dernière vente (999 = jamais)
-  const margin     = s.unitMargin;
-  const marginPct  = (margin * 100).toFixed(0);
-  const velLabel   = dpu < 999 ? `1/${dpu}j` : null;
-
-  // ── Jours de stock restants ─────────────────────────────────
-  const daysLeft = (s.velocity > 0 && stock > 0)
-    ? Math.round(stock / s.velocity)
-    : (stock === 0 ? 0 : 999);
-
-  // ────────────────────────────────────────────────────────────
-  // RÈGLE FONDAMENTALE — Protection cash
-  //
-  // On ne commande QUE si toutes ces conditions sont réunies :
-  //   A. Le signal de vente est prouvé (pas 1 vente isolée)
-  //   B. Le stock est réellement en danger (rupture ou < 7j)
-  //   C. La cadence justifie l'achat maintenant, pas dans 3 semaines
-  //
-  // Si stock > 0 et daysLeft > 7 → STABLE, le stock couvre encore
-  // Si 1 seule vente → on attend que le stock actuel se vende
-  // ────────────────────────────────────────────────────────────
-
-  // ── 1. JAMAIS VENDU ─────────────────────────────────────────
+  // 1. Stop / liquidate
   if (total === 0) {
     if (stock === 0) return { decision:'⚪ Stable', decisionReason:'Jamais vendu · pas de stock', decisionCls:'dec-stable' };
-    if (stock >= 3)  return { decision:'🔴 Arrêter le produit', decisionReason:'Jamais vendu · capital immobilisé', decisionCls:'dec-stop' };
+    if (stock >= 3) return { decision:'🔴 Arrêter le produit', decisionReason:'Jamais vendu · capital immobilisé', decisionCls:'dec-stop' };
     return { decision:'🟣 Tester encore', decisionReason:'Jamais vendu · tester le prix', decisionCls:'dec-test' };
   }
 
-  // ── 2. STOP — stock mort ─────────────────────────────────────
-  // Aucune vente en 30j + stock présent + score faible
-  if (r30 === 0 && stock >= 2 && s.score <= 40) {
+  if (r30 === 0 && stock >= 2 && dsl > 30 && s.score <= 40) {
     return {
-      decision: '🔴 Arrêter le produit',
-      decisionReason: dsl < 999 ? `Aucune vente depuis ${dsl}j · capital immobilisé` : 'Stock sans demande',
-      decisionCls: 'dec-stop',
+      decision:'🔴 Arrêter le produit',
+      decisionReason:`Aucune vente récente · dernière vente ${dsl}j`,
+      decisionCls:'dec-stop',
     };
   }
 
-  // ── 3. PROTECTION : stock actuel couvre encore → STABLE ─────
-  // Règle clé : si il reste du stock ET qu'il durera > 7 jours → pas besoin de commander
-  if (stock > 0 && daysLeft > 7) {
-    // Exception : bestseller avec stock qui fond vite et historique très solide
-    const fastBestseller = total >= 6 && dpu <= 5 && daysLeft <= 14 && r30 >= 3;
-    if (!fastBestseller) {
-      const note = daysLeft < 999 ? `stock pour ~${daysLeft}j` : `${stock} en stock`;
-      return {
-        decision: '⚪ Stable',
-        decisionReason: `${note} · ${velLabel ? `rotation ${velLabel}` : `${total} vente(s)`} · surveiller`,
-        decisionCls: 'dec-stable',
-      };
-    }
-  }
-
-  // ── 4. SIGNAL UNIQUE (1 vente) → prudence maximale ──────────
-  if (total === 1) {
-    // 1 vente + stock restant → attendre que ça se vende
-    if (stock > 0) {
-      return {
-        decision: '⚪ Stable',
-        decisionReason: `Signal unique · attendre la prochaine vente pour décider`,
-        decisionCls: 'dec-stable',
-      };
-    }
-    // 1 vente + rupture + vente récente (≤ 14j) → 1 seule unité max
-    if (stock === 0 && dsl <= 14) {
-      return {
-        decision: '🟢 Commander 1 unité',
-        decisionReason: `Rupture · 1 vente il y a ${dsl}j · commande prudente`,
-        decisionCls: 'dec-order',
-      };
-    }
-    // 1 vente + rupture + vente ancienne → pas assez de signal
+  // 2. Order when there is real signal + stock risk
+  if (stock === 0 && qty > 0) {
     return {
-      decision: '⚪ Stable',
-      decisionReason: `1 vente il y a ${dsl}j · signal trop faible pour réacheter`,
-      decisionCls: 'dec-stable',
+      decision:`🟢 Commander ${qty} unité${qty > 1 ? 's' : ''}`,
+      decisionReason: qty <= 2
+        ? `Rupture · ${s.confidence === 'LOW' ? 'signal prudent' : 'signal à confirmer'}`
+        : `Rupture · ${r30} vente(s)/30j · ${velLabel || 'signal fort'}`,
+      decisionCls:'dec-order',
     };
   }
 
-  // ── 5. SIGNAL FAIBLE (2 ventes) ─────────────────────────────
-  if (total === 2) {
-    // Stock encore présent → attendre
-    if (stock > 0) {
-      return {
-        decision: '⚪ Stable',
-        decisionReason: `${stock} en stock · attendre confirmation de la tendance`,
-        decisionCls: 'dec-stable',
-      };
-    }
-    // Rupture + cadence rapide (≤ 7j/vente) + vente récente
-    if (stock === 0 && dpu <= 7 && dsl <= 14) {
-      return {
-        decision: '🟢 Commander 2 unités',
-        decisionReason: `Rupture · rotation ${velLabel} · signal à confirmer`,
-        decisionCls: 'dec-order',
-      };
-    }
-    // Rupture + cadence lente ou vente ancienne → 1 unité max
-    if (stock === 0 && dsl <= 21) {
-      return {
-        decision: '🟢 Commander 1 unité',
-        decisionReason: `Rupture · 2 ventes · cadence lente · commande minimale`,
-        decisionCls: 'dec-order',
-      };
-    }
-    // Rupture mais signal trop vieux
-    if (stock === 0) {
-      return {
-        decision: '⚪ Stable',
-        decisionReason: `2 ventes mais dernière il y a ${dsl}j · signal faible`,
-        decisionCls: 'dec-stable',
-      };
-    }
-  }
-
-  // ── 6. SIGNAL PROUVÉ (≥ 3 ventes) — calcul intelligent ─────
-  // À partir d'ici on a de vraies données pour décider
-
-  // Quantité basée sur couverture 14 jours (pas 30 — conservateur)
-  // Ajustée par marge : haute marge → on peut aller un peu plus
-  const coverTarget = margin >= 0.50 ? 14 : (margin >= 0.40 ? 12 : 10);
-  const rawQty      = dpu < 999 ? Math.round(coverTarget / dpu) : 2;
-  const netQty      = Math.max(1, Math.min(
-    total >= 6 ? 8 : 5,  // cap absolu selon maturité produit
-    rawQty - Math.max(0, stock)
-  ));
-
-  // Rupture franche + signal fort
-  if (stock === 0 && r30 >= 2 && dsl <= 14) {
-    const quality = total >= 6 ? ' · produit éprouvé' : '';
+  if (stock > 0 && daysLeft <= 7 && qty > 0) {
     return {
-      decision: `🟢 Commander ${netQty} unité${netQty > 1 ? 's' : ''}`,
-      decisionReason: `Rupture · ${r30} vente(s)/30j · rotation ${velLabel || '—'}${quality}`,
-      decisionCls: 'dec-order',
+      decision:`🟢 Commander ${qty} unité${qty > 1 ? 's' : ''}`,
+      decisionReason:`Stock pour ~${daysLeft}j · ${velLabel || 'rotation active'} · anticiper`,
+      decisionCls:'dec-order',
     };
   }
 
-  // Rupture + signal plus faible (1 vente/30j mais historique ok)
-  if (stock === 0 && r30 >= 1 && dsl <= 21) {
-    const safeQty = Math.min(2, netQty);
+  // 3. Test if weak signal
+  if (stock === 0 && total <= 2 && r30 <= 1) {
     return {
-      decision: `🟢 Commander ${safeQty} unité${safeQty > 1 ? 's' : ''}`,
-      decisionReason: `Rupture · signal modéré · commande conservatrice`,
-      decisionCls: 'dec-order',
+      decision:'🟣 Tester encore',
+      decisionReason:`Signal faible · ${total} vente(s) au total`,
+      decisionCls:'dec-test',
     };
   }
 
-  // Rupture mais dernière vente ancienne → pas de commande impulsive
-  if (stock === 0 && dsl > 21) {
-    return {
-      decision: '⚪ Stable',
-      decisionReason: `Rupture · mais dernière vente il y a ${dsl}j · attendre signal`,
-      decisionCls: 'dec-stable',
-    };
-  }
-
-  // Stock faible + imminent (< 7j) + signal fort
-  if (stock > 0 && daysLeft <= 7 && r30 >= 2) {
-    const anticipateQty = Math.max(1, Math.min(3, netQty));
-    return {
-      decision: `🟢 Commander ${anticipateQty} unité${anticipateQty > 1 ? 's' : ''}`,
-      decisionReason: `Stock pour ~${daysLeft}j · rotation ${velLabel || '—'} · anticiper`,
-      decisionCls: 'dec-order',
-    };
-  }
-
-  // ── 7. BOOST — très rare, stock solide + marge forte ────────
-  if (total >= 6 && r30 >= 3 && margin >= 0.50 && s.score >= 70 && stock >= 3) {
-    return {
-      decision: '🔵 Booster le produit',
-      decisionReason: `Historique solide · marge ${marginPct}% · fort ROI`,
-      decisionCls: 'dec-boost',
-    };
-  }
-
-  // ── 8. BAISSER LE PRIX — stock bloqué ───────────────────────
+  // 4. Lower price if blocked stock and margin allows
   if (stock >= 3 && r30 <= 1 && margin >= 0.40) {
     return {
-      decision: '🟡 Baisser le prix',
-      decisionReason: `Stock élevé (${stock}) · ventes lentes · marge ${marginPct}% absorbe une remise`,
-      decisionCls: 'dec-lower',
+      decision:'🟡 Baisser le prix',
+      decisionReason:`Stock élevé (${stock}) · marge ${marginPct}% permet une remise`,
+      decisionCls:'dec-lower',
     };
   }
 
-  // ── 9. STABLE — défaut pour tout ce qui reste ───────────────
+  // 5. Boost proven strong profitable products
+  if (total >= 6 && r30 >= 3 && margin >= 0.45 && stock >= 3) {
+    return {
+      decision:'🔵 Booster le produit',
+      decisionReason:`Historique solide · ${r30} vente(s)/30j · marge ${marginPct}%`,
+      decisionCls:'dec-boost',
+    };
+  }
+
+  // 6. Stable default when coverage is comfortable
   const stableNote = stock > 0
-    ? (daysLeft < 999 ? `stock pour ~${daysLeft}j · ${total} vente(s) au total` : `${stock} en stock · ${total} vente(s)`)
+    ? (daysLeft < 999 ? `stock pour ~${daysLeft}j · ${total} vente(s)` : `${stock} en stock · ${total} vente(s)`)
     : `${total} vente(s) · à surveiller`;
   return {
-    decision: '⚪ Stable',
+    decision:'⚪ Stable',
     decisionReason: stableNote,
-    decisionCls: 'dec-stable',
+    decisionCls:'dec-stable',
   };
 }
+
 
 function setReassortFilter(f) { reassortFilter = f; renderReassorts(); }
 
