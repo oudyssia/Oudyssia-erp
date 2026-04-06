@@ -370,8 +370,6 @@ function getMonthlySalesStats() {
 
 // ══════════════════════════════════════
 // SMART FORECAST & REASSORT HELPERS
-// Forecast next month based on previous month + current month
-// without touching date system or month filtering logic
 // ══════════════════════════════════════
 
 function getMonthShift(monthStr, shift) {
@@ -408,15 +406,9 @@ function getRecentSalesQty(sku, days = 30) {
 }
 
 function getSellingPriceReference(p) {
-  const available = [];
-  if ((p.dispo_site === 'Oui') && (p.prix_site || 0) > 0) available.push(p.prix_site);
-  if ((p.dispo_vinted === 'Oui') && (p.prix_vinted || 0) > 0) available.push(p.prix_vinted);
-  if ((p.prix_tiktok || 0) > 0) available.push(p.prix_tiktok);
-
   if ((p.dispo_site === 'Oui') && (p.prix_site || 0) > 0) return p.prix_site;
   if ((p.dispo_vinted === 'Oui') && (p.prix_vinted || 0) > 0) return p.prix_vinted;
   if ((p.prix_tiktok || 0) > 0) return p.prix_tiktok;
-
   const fallback = [p.prix_site || 0, p.prix_vinted || 0, p.prix_tiktok || 0].filter(x => x > 0);
   return fallback.length ? fallback.reduce((a,b)=>a+b,0) / fallback.length : 0;
 }
@@ -552,7 +544,7 @@ function getDashboardExtras(mois) {
 }
 
 // ══════════════════════════════════════
-// ★ NOUVEAU — EXPORT CSV
+// EXPORT CSV
 // ══════════════════════════════════════
 
 function exportVentesCSV() {
@@ -571,7 +563,7 @@ function exportVentesCSV() {
   }).filter(Boolean);
 
   const header = 'Date;SKU;Parfum;Plateforme;Qté;Prix;Px Achat;CA;Marge Brute;Marge %;Frais Plat;Frais Livr;Marge Nette;Type;N° Commande';
-  const csv = '\uFEFF' + header + '\n' + rows.join('\n'); // BOM pour Excel FR
+  const csv = '\uFEFF' + header + '\n' + rows.join('\n');
   const label = mois ? formatMonth(mois) : 'Tout';
   downloadFile(csv, `OUDYSSIA_Ventes_${label.replace(' ','_')}.csv`, 'text/csv;charset=utf-8;');
   showToast('Export CSV ventes ✓');
@@ -606,18 +598,17 @@ function downloadFile(content, filename, mimeType) {
 }
 
 // ══════════════════════════════════════
-// 4. DASHBOARD avec filtre mois
+// 4. DASHBOARD
 // ══════════════════════════════════════
 
 let charts = {};
-let dashboardMois = getCurrentMonth(); // ★ NOUVEAU — mois sélectionné dashboard
+let dashboardMois = getCurrentMonth();
 
 function renderDashboard() {
   const mois = dashboardMois;
   const kpis = calcKPIs(mois);
   const extras = getDashboardExtras(mois);
 
-  // Mise à jour badge mois dans le header
   const badge = document.getElementById('dashboard-month-badge');
   if (badge) badge.textContent = formatMonth(mois);
 
@@ -655,7 +646,6 @@ function renderDashboard() {
   renderRecentSales();
 }
 
-// ★ NOUVEAU — Sélecteur de mois dashboard
 function onDashboardMonthChange(val) {
   dashboardMois = val || getCurrentMonth();
   renderDashboard();
@@ -668,21 +658,35 @@ function buildDashboardMonthSelect() {
   sel.innerHTML = months.map(m => `<option value="${m}" ${m===dashboardMois?'selected':''}>${formatMonth(m)}</option>`).join('');
 }
 
+// ══════════════════════════════════════
+// BUG FIX #1 — Graphique profit journalier
+// Utilise margeNette au lieu de margeB
+// ══════════════════════════════════════
 function renderChartDaily(mois) {
   const m = mois || getCurrentMonth();
   const byDay = {};
-  ventes.filter(v => v.date && v.date.startsWith(m) && v.type !== 'Retour').forEach((v,i) => {
+  ventes.filter(v => v.date && v.date.startsWith(m) && v.type !== 'Retour').forEach((v) => {
     const d = v.date;
     const calc = calcVente(v, ventes.indexOf(v));
     if (!byDay[d]) byDay[d] = 0;
-    if (calc) byDay[d] += calc.margeB;
+    // ✅ CORRIGÉ : margeNette (après frais plateforme) au lieu de margeB
+    if (calc) byDay[d] += calc.margeNette;
   });
   const days = Object.keys(byDay).sort();
   const ctx = document.getElementById('chart-daily');
   if (charts.daily) charts.daily.destroy();
   charts.daily = new Chart(ctx, {
     type: 'bar',
-    data: { labels: days.map(d => d.split('-')[2]), datasets: [{ data: days.map(d => Math.round(byDay[d]*100)/100), backgroundColor: days.map(d => Math.round(byDay[d]*100)/100 > 0 ? 'rgba(200,169,81,0.70)' : 'rgba(220,38,38,0.45)'), borderColor: days.map(d => Math.round(byDay[d]*100)/100 > 0 ? '#C8A951' : '#DC2626'), borderWidth: 1, borderRadius: 5 }] },
+    data: {
+      labels: days.map(d => d.split('-')[2]),
+      datasets: [{
+        data: days.map(d => Math.round(byDay[d]*100)/100),
+        backgroundColor: days.map(d => Math.round(byDay[d]*100)/100 > 0 ? 'rgba(200,169,81,0.70)' : 'rgba(220,38,38,0.45)'),
+        borderColor: days.map(d => Math.round(byDay[d]*100)/100 > 0 ? '#C8A951' : '#DC2626'),
+        borderWidth: 1,
+        borderRadius: 5
+      }]
+    },
     options: chartOptions('€')
   });
 }
@@ -693,14 +697,7 @@ function renderChartPlatforms(mois) {
   const data = plats.map(p => ventes.filter(v => v.date && v.date.startsWith(m) && v.plateforme === p && v.type !== 'Retour').reduce((s,v) => s + v.prix*v.qte, 0));
   const ctx = document.getElementById('chart-platforms');
   if (charts.platforms) charts.platforms.destroy();
-  charts.platforms = new Chart(ctx, { type: 'doughnut', data: { labels: plats, datasets: [{ data, backgroundColor: [
-  '#C9A15C',
-  '#2C3E50',
-  '#D8A7B1',
-  '#6D597A',
-  '#C46A2D',
-  '#5A1E2B'
-], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions('€'), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:11}, padding: 14, boxWidth: 12 } } } } });
+  charts.platforms = new Chart(ctx, { type: 'doughnut', data: { labels: plats, datasets: [{ data, backgroundColor: ['#C9A15C','#2C3E50','#D8A7B1','#6D597A','#C46A2D','#5A1E2B'], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions('€'), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:11}, padding: 14, boxWidth: 12 } } } } });
 }
 
 function renderChartMargins(mois) {
@@ -712,16 +709,8 @@ function renderChartMargins(mois) {
   });
   const ctx = document.getElementById('chart-margins');
   if (charts.margins) charts.margins.destroy();
-  charts.margins = new Chart(ctx, { type: 'pie', data: { labels: Object.keys(counts), datasets: [{ data: Object.values(counts), backgroundColor: [
-  '#C9A15C',
-  '#2C3E50',
-  '#D8A7B1',
-  '#6D597A',
-  '#C46A2D',
-  '#5A1E2B'
-], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:10}, padding: 12, boxWidth: 12 } } } } });
+  charts.margins = new Chart(ctx, { type: 'pie', data: { labels: Object.keys(counts), datasets: [{ data: Object.values(counts), backgroundColor: ['#C9A15C','#2C3E50','#D8A7B1','#6D597A','#C46A2D','#5A1E2B'], borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:10}, padding: 12, boxWidth: 12 } } } } });
 }
-
 
 function renderChartMonthlyCA() {
   const byMonth = getMonthlySalesStats();
@@ -742,45 +731,13 @@ function renderChartMonthlyCA() {
     data: {
       labels: chartLabels,
       datasets: [
-        {
-          label: 'Réel',
-          data: realData,
-          borderColor: '#C8A951',
-          backgroundColor: 'rgba(200,169,81,0.10)',
-          tension: 0.4,
-          fill: true,
-          borderWidth: 2,
-          pointRadius: 4,
-          pointHoverRadius: 6,
-          pointBackgroundColor: '#E8D08A',
-          pointBorderColor: '#C8A951',
-          pointBorderWidth: 1.5
-        },
-        {
-          label: 'Prévision',
-          data: forecastData,
-          borderColor: 'rgba(232,208,138,0.60)',
-          backgroundColor: 'transparent',
-          tension: 0.4,
-          fill: false,
-          borderWidth: 1.5,
-          borderDash: [5,5],
-          pointRadius: 3,
-          pointBackgroundColor: 'rgba(232,208,138,0.55)'
-        }
+        { label: 'Réel', data: realData, borderColor: '#C8A951', backgroundColor: 'rgba(200,169,81,0.10)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#E8D08A', pointBorderColor: '#C8A951', pointBorderWidth: 1.5 },
+        { label: 'Prévision', data: forecastData, borderColor: 'rgba(232,208,138,0.60)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,5], pointRadius: 3, pointBackgroundColor: 'rgba(232,208,138,0.55)' }
       ]
     },
-    options: {
-      ...chartOptions('€'),
-      plugins: {
-        ...chartOptions('€').plugins,
-        legend: { display: true, labels: { color: '#9A9080', font: {size:10} } }
-      }
-    }
+    options: { ...chartOptions('€'), plugins: { ...chartOptions('€').plugins, legend: { display: true, labels: { color: '#9A9080', font: {size:10} } } } }
   });
 }
-
-
 
 function renderChartMonthlyProfit() {
   const byMonth = getMonthlySalesStats();
@@ -801,44 +758,13 @@ function renderChartMonthlyProfit() {
     data: {
       labels: chartLabels,
       datasets: [
-        {
-          label: 'Réel',
-          data: realData,
-          borderColor: '#4ADE80',
-          backgroundColor: 'rgba(74,222,128,0.08)',
-          tension: 0.4,
-          fill: true,
-          borderWidth: 2,
-          pointRadius: 4,
-          pointHoverRadius: 6,
-          pointBackgroundColor: '#4ADE80',
-          pointBorderColor: '#22C55E',
-          pointBorderWidth: 1.5
-        },
-        {
-          label: 'Prévision',
-          data: forecastData,
-          borderColor: 'rgba(134,239,172,0.55)',
-          backgroundColor: 'transparent',
-          tension: 0.4,
-          fill: false,
-          borderWidth: 1.5,
-          borderDash: [5,5],
-          pointRadius: 3,
-          pointBackgroundColor: 'rgba(134,239,172,0.45)'
-        }
+        { label: 'Réel', data: realData, borderColor: '#4ADE80', backgroundColor: 'rgba(74,222,128,0.08)', tension: 0.4, fill: true, borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#4ADE80', pointBorderColor: '#22C55E', pointBorderWidth: 1.5 },
+        { label: 'Prévision', data: forecastData, borderColor: 'rgba(134,239,172,0.55)', backgroundColor: 'transparent', tension: 0.4, fill: false, borderWidth: 1.5, borderDash: [5,5], pointRadius: 3, pointBackgroundColor: 'rgba(134,239,172,0.45)' }
       ]
     },
-    options: {
-      ...chartOptions('€'),
-      plugins: {
-        ...chartOptions('€').plugins,
-        legend: { display: true, labels: { color: '#9A9080', font: {size:10} } }
-      }
-    }
+    options: { ...chartOptions('€'), plugins: { ...chartOptions('€').plugins, legend: { display: true, labels: { color: '#9A9080', font: {size:10} } } } }
   });
 }
-
 
 function renderChartSalesPlatform() {
   const counts = {};
@@ -847,7 +773,7 @@ function renderChartSalesPlatform() {
   const ctx = document.getElementById('chart-sales-platform');
   if (!ctx) return;
   if (charts.salesPlatform) charts.salesPlatform.destroy();
-    const platColorMap = { Vinted:'rgba(33,150,243,0.80)', 'Site Oudyssia':'rgba(200,169,81,0.80)', TikTok:'rgba(139,92,246,0.80)', Direct:'rgba(74,222,128,0.75)' };
+  const platColorMap = { Vinted:'rgba(33,150,243,0.80)', 'Site Oudyssia':'rgba(200,169,81,0.80)', TikTok:'rgba(139,92,246,0.80)', Direct:'rgba(74,222,128,0.75)' };
   charts.salesPlatform = new Chart(ctx, { type: 'doughnut', data: { labels, datasets: [{ data: labels.map(l => counts[l]||0), backgroundColor: labels.map(l => platColorMap[l]||'rgba(90,82,72,0.7)'), borderColor: '#0D0D0D', borderWidth: 2 }] }, options: { ...chartOptions(), plugins: { legend: { position: 'bottom', labels: { color: '#E5E7EB', font: {size:11}, padding: 14, boxWidth: 12 } } } } });
 }
 
@@ -875,14 +801,19 @@ function chartOptions(unit='') {
   };
 }
 
+// ══════════════════════════════════════
+// BUG FIX #2 — Top 5 produits
+// Utilise margeNette au lieu de margeB
+// ══════════════════════════════════════
 function renderTopProduits(mois) {
   const m = mois || getCurrentMonth();
   const profitBySku = {};
-  ventes.filter(v => v.date && v.date.startsWith(m) && v.type !== 'Retour').forEach((v,i) => {
+  ventes.filter(v => v.date && v.date.startsWith(m) && v.type !== 'Retour').forEach((v) => {
     const c = calcVente(v, ventes.indexOf(v));
     if (!c) return;
     if (!profitBySku[v.sku]) profitBySku[v.sku] = {profit:0, qte:0};
-    profitBySku[v.sku].profit += c.margeB;
+    // ✅ CORRIGÉ : margeNette (après frais plateforme + livraison) au lieu de margeB
+    profitBySku[v.sku].profit += c.margeNette;
     profitBySku[v.sku].qte += v.qte;
   });
   const sorted = Object.entries(profitBySku).sort((a,b)=>b[1].profit-a[1].profit).slice(0,5);
@@ -1069,16 +1000,15 @@ function deleteVente(idx) {
 }
 
 // ══════════════════════════════════════
-// ★ NOUVEAU — COMMANDE GROUPÉE MULTI-PRODUITS
+// COMMANDE GROUPÉE MULTI-PRODUITS
 // ══════════════════════════════════════
 
-let cmdLines = []; // lignes de la commande en cours
+let cmdLines = [];
 
 function openCommandeGroupee() {
-  cmdLines = [{}]; // 1 ligne vide par défaut
+  cmdLines = [{}];
   document.getElementById('modal-overlay').classList.add('open');
   document.getElementById('modal-commande').classList.add('open');
-  // Init
   document.getElementById('cmd-date').value = new Date().toISOString().split('T')[0];
   document.getElementById('cmd-plateforme').value = 'Site Oudyssia';
   document.getElementById('cmd-paiement').value = 'PayPal';
@@ -1109,7 +1039,6 @@ function renderCmdLines() {
       ${cmdLines.length > 1 ? `<button class="btn-icon danger" onclick="removeCmdLine(${i})">✕</button>` : '<span style="width:28px"></span>'}
     </div>
   `).join('');
-  // Re-select values
   cmdLines.forEach((line, i) => {
     const sel = document.getElementById('cmd-lines-container').querySelectorAll('.cmd-sku')[i];
     if (sel && line.sku) sel.value = line.sku;
@@ -1208,7 +1137,6 @@ function saveCmdGroupee(e) {
   const validLines = cmdLines.filter(l => l.sku && l.prix > 0);
   if (!date || validLines.length === 0) { showToast('Remplis au moins une ligne ✗'); return; }
 
-  // Numéro de commande auto si multi-produits
   const isGrouped = validLines.length > 1;
   let numCmd = '';
   if (isGrouped) {
@@ -1241,7 +1169,6 @@ function saveCmdGroupee(e) {
   showToast(isGrouped ? `Commande ${numCmd} enregistrée (${validLines.length} articles) ✓` : 'Vente enregistrée ✓');
 }
 
-// Modal vente simple (conservé intact)
 function onSkuChange() {
   const sku = document.getElementById('v-sku').value;
   const p = getProduct(sku);
@@ -1380,12 +1307,10 @@ function updateObjectif(val) { finance.objectif = parseFloat(val)||0; saveData('
 function updateTresorerie(key, val) { finance.tresorerie[key] = parseFloat(val)||0; saveData('finance', finance); renderFinance(); }
 
 // ══════════════════════════════════════
-// 9. RÉASSORTS — SYSTÈME INTELLIGENT v2
-// Scoring séparé : business vs urgence stock
+// 9. RÉASSORTS
 // ══════════════════════════════════════
 
 let reassortFilter = 'all';
-
 
 function calcReassortScore(sku) {
   const p = getProduct(sku);
@@ -1407,7 +1332,7 @@ function calcReassortScore(sku) {
   const daysSinceLast = lastSale ? Math.round((today - lastSale) / 86400000) : 999;
 
   const rec = getSuggestedReorderForSku(sku);
-  const velocity = rec.weightedUnits / 30; // weighted monthly demand converted to daily velocity
+  const velocity = rec.weightedUnits / 30;
   const daysPerUnit = velocity > 0 ? Math.max(1, Math.round(1 / velocity)) : 999;
   const coverageDays = rec.coverageDays;
 
@@ -1443,13 +1368,9 @@ function calcReassortScore(sku) {
 
   let priority, priorityCls, reason;
   if (totalQty === 0) {
-    if (stock === 0) {
-      priority = 'NON ACTIF'; priorityCls = 'prio-low'; reason = 'Jamais vendu · Pas de stock';
-    } else if (stock >= 3) {
-      priority = 'LIQUIDER'; priorityCls = 'prio-liquidate'; reason = 'Jamais vendu · Stock immobilisé';
-    } else {
-      priority = 'TEST'; priorityCls = 'prio-test'; reason = 'Jamais vendu · Tester le produit';
-    }
+    if (stock === 0) { priority = 'NON ACTIF'; priorityCls = 'prio-low'; reason = 'Jamais vendu · Pas de stock'; }
+    else if (stock >= 3) { priority = 'LIQUIDER'; priorityCls = 'prio-liquidate'; reason = 'Jamais vendu · Stock immobilisé'; }
+    else { priority = 'TEST'; priorityCls = 'prio-test'; reason = 'Jamais vendu · Tester le produit'; }
   } else if (stock > 0 && daysSinceLast > 45 && rec.recentQty === 0) {
     priority = 'LIQUIDER'; priorityCls = 'prio-liquidate'; reason = `Dernière vente ${daysSinceLast}j · Stock lent`;
   } else {
@@ -1491,19 +1412,6 @@ function calcReassortScore(sku) {
   };
 }
 
-
-// ══════════════════════════════════════
-// DECISION ENGINE
-// Priorité : Stop > Order > Lower > Boost > Test > Stable
-// S'appuie uniquement sur les données déjà calculées dans calcReassortScore
-// ══════════════════════════════════════
-
-// ══════════════════════════════════════════════════════════════
-// DECISION ENGINE — Level 4.5 (corrected)
-// Hierarchy: Survival > Profit > Optimization > Cleanup
-// ══════════════════════════════════════════════════════════════
-
-
 function calcDecision(s) {
   const total = s.totalQty || 0;
   const stock = s.stock;
@@ -1516,7 +1424,6 @@ function calcDecision(s) {
   const daysLeft = s.coverageDays < 999 ? Math.round(s.coverageDays) : 999;
   const qty = Math.max(0, s.suggestedQty || 0);
 
-  // 1. Stop / liquidate
   if (total === 0) {
     if (stock === 0) return { decision:'⚪ Stable', decisionReason:'Jamais vendu · pas de stock', decisionCls:'dec-stable' };
     if (stock >= 3) return { decision:'🔴 Arrêter le produit', decisionReason:'Jamais vendu · capital immobilisé', decisionCls:'dec-stop' };
@@ -1524,70 +1431,38 @@ function calcDecision(s) {
   }
 
   if (r30 === 0 && stock >= 2 && dsl > 30 && s.score <= 40) {
-    return {
-      decision:'🔴 Arrêter le produit',
-      decisionReason:`Aucune vente récente · dernière vente ${dsl}j`,
-      decisionCls:'dec-stop',
-    };
+    return { decision:'🔴 Arrêter le produit', decisionReason:`Aucune vente récente · dernière vente ${dsl}j`, decisionCls:'dec-stop' };
   }
 
-  // 2. Order when there is real signal + stock risk
   if (stock === 0 && qty > 0) {
     return {
       decision:`🟢 Commander ${qty} unité${qty > 1 ? 's' : ''}`,
-      decisionReason: qty <= 2
-        ? `Rupture · ${s.confidence === 'LOW' ? 'signal prudent' : 'signal à confirmer'}`
-        : `Rupture · ${r30} vente(s)/30j · ${velLabel || 'signal fort'}`,
+      decisionReason: qty <= 2 ? `Rupture · ${s.confidence === 'LOW' ? 'signal prudent' : 'signal à confirmer'}` : `Rupture · ${r30} vente(s)/30j · ${velLabel || 'signal fort'}`,
       decisionCls:'dec-order',
     };
   }
 
   if (stock > 0 && daysLeft <= 7 && qty > 0) {
-    return {
-      decision:`🟢 Commander ${qty} unité${qty > 1 ? 's' : ''}`,
-      decisionReason:`Stock pour ~${daysLeft}j · ${velLabel || 'rotation active'} · anticiper`,
-      decisionCls:'dec-order',
-    };
+    return { decision:`🟢 Commander ${qty} unité${qty > 1 ? 's' : ''}`, decisionReason:`Stock pour ~${daysLeft}j · ${velLabel || 'rotation active'} · anticiper`, decisionCls:'dec-order' };
   }
 
-  // 3. Test if weak signal
   if (stock === 0 && total <= 2 && r30 <= 1) {
-    return {
-      decision:'🟣 Tester encore',
-      decisionReason:`Signal faible · ${total} vente(s) au total`,
-      decisionCls:'dec-test',
-    };
+    return { decision:'🟣 Tester encore', decisionReason:`Signal faible · ${total} vente(s) au total`, decisionCls:'dec-test' };
   }
 
-  // 4. Lower price if blocked stock and margin allows
   if (stock >= 3 && r30 <= 1 && margin >= 0.40) {
-    return {
-      decision:'🟡 Baisser le prix',
-      decisionReason:`Stock élevé (${stock}) · marge ${marginPct}% permet une remise`,
-      decisionCls:'dec-lower',
-    };
+    return { decision:'🟡 Baisser le prix', decisionReason:`Stock élevé (${stock}) · marge ${marginPct}% permet une remise`, decisionCls:'dec-lower' };
   }
 
-  // 5. Boost proven strong profitable products
   if (total >= 6 && r30 >= 3 && margin >= 0.45 && stock >= 3) {
-    return {
-      decision:'🔵 Booster le produit',
-      decisionReason:`Historique solide · ${r30} vente(s)/30j · marge ${marginPct}%`,
-      decisionCls:'dec-boost',
-    };
+    return { decision:'🔵 Booster le produit', decisionReason:`Historique solide · ${r30} vente(s)/30j · marge ${marginPct}%`, decisionCls:'dec-boost' };
   }
 
-  // 6. Stable default when coverage is comfortable
   const stableNote = stock > 0
     ? (daysLeft < 999 ? `stock pour ~${daysLeft}j · ${total} vente(s)` : `${stock} en stock · ${total} vente(s)`)
     : `${total} vente(s) · à surveiller`;
-  return {
-    decision:'⚪ Stable',
-    decisionReason: stableNote,
-    decisionCls:'dec-stable',
-  };
+  return { decision:'⚪ Stable', decisionReason: stableNote, decisionCls:'dec-stable' };
 }
-
 
 function setReassortFilter(f) { reassortFilter = f; renderReassorts(); }
 
@@ -1624,19 +1499,15 @@ function renderReassorts() {
     </div>`;
 
   let displayed = scores;
-  if (reassortFilter==='urgent')   displayed = scores.filter(s => s.priority==='URGENT');
-  if (reassortFilter==='high')     displayed = scores.filter(s => s.priority==='HAUTE');
+  if (reassortFilter==='urgent')    displayed = scores.filter(s => s.priority==='URGENT');
+  if (reassortFilter==='high')      displayed = scores.filter(s => s.priority==='HAUTE');
   if (reassortFilter==='liquidate') displayed = scores.filter(s => s.priority==='LIQUIDER');
-  if (reassortFilter==='test')     displayed = scores.filter(s => s.priority==='TEST' || s.priority==='NON ACTIF');
+  if (reassortFilter==='test')      displayed = scores.filter(s => s.priority==='TEST' || s.priority==='NON ACTIF');
 
   const tbody = document.getElementById('tbody-reassorts');
-  if (!displayed.length) {
-    tbody.innerHTML = '<tr><td colspan="13" class="no-data">✅ Aucun produit dans cette catégorie</td></tr>';
-    return;
-  }
+  if (!displayed.length) { tbody.innerHTML = '<tr><td colspan="13" class="no-data">✅ Aucun produit dans cette catégorie</td></tr>'; return; }
 
   tbody.innerHTML = displayed.map(s => {
-    // ── Velocity: always "1 vente / Xj" format for readability ──
     let velStr;
     if (s.totalQty === 0)         velStr = '<span class="text-dim">—</span>';
     else if (s.daysPerUnit <= 1)  velStr = '<span class="text-green">chaque jour</span>';
@@ -1644,12 +1515,10 @@ function renderReassorts() {
     else if (s.daysPerUnit <= 21) velStr = `<span style="color:var(--gold)">1/${s.daysPerUnit}j</span>`;
     else                          velStr = `<span class="text-dim">1/${s.daysPerUnit}j</span>`;
 
-    // ── Cash speed ──
     const cashStr = s.cashSpeed > 0
       ? `<span class="${s.cashSpeed>=1?'text-green':''}">${s.cashSpeed.toFixed(1)}€/j</span>`
       : '<span class="text-dim">—</span>';
 
-    // ── Last sale ──
     const lastStr = s.daysSinceLast < 999
       ? (s.daysSinceLast === 0 ? '<span class="text-green">Auj.</span>'
         : s.daysSinceLast <= 7  ? `<span class="text-green">${s.daysSinceLast}j</span>`
@@ -1657,11 +1526,8 @@ function renderReassorts() {
         : `<span class="text-dim">${s.daysSinceLast}j</span>`)
       : '<span class="text-dim">—</span>';
 
-    // ── Score bar (business only, not inflated by urgency) ──
     const barW = Math.min(100, Math.round(s.businessScore / 0.7));
-
     const idx = products.indexOf(getProduct(s.sku));
-
     const dec = calcDecision(s);
 
     return `<tr class="reassort-row">
