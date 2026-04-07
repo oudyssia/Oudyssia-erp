@@ -130,7 +130,13 @@ const INITIAL_ACHATS = [
 const INITIAL_FINANCE = {
   charges: { pub:0, packaging:3, abo:0, autres:0 },
   objectif: 600,
-  tresorerie: { vinted:0, tiktok:0, site:0, direct:0 }
+  // ★ Virements = journal cumulatif. Chaque virement = 1 entrée {id, date, plateforme, montant, note}
+  // Saisir chaque virement séparément — le total se calcule automatiquement
+  virements: [
+    {id:"vir-001", date:"2026-03-31", plateforme:"Vinted",        montant:959.4,  note:"Virement mars Vinted"},
+    {id:"vir-002", date:"2026-03-31", plateforme:"Direct",        montant:215,    note:"Encaissement direct mars"},
+    {id:"vir-003", date:"2026-04-01", plateforme:"Site Oudyssia", montant:170.6,  note:"Virement site mars"}
+  ]
 };
 
 // ══════════════════════════════════════
@@ -231,7 +237,7 @@ async function saveCloudState(key, data) {
 // 2. STATE & STORAGE
 // ══════════════════════════════════════
 
-const DATA_VERSION = 'excel-sync-2026-03-29-v1';
+const DATA_VERSION = 'excel-sync-2026-04-07-v3';
 
 function bootstrapDataFromExcelIfNeeded() {
   const v = localStorage.getItem('oudyssia_data_version');
@@ -258,7 +264,7 @@ let ventes   = loadData('ventes', INITIAL_VENTES);
 let achats   = loadData('achats', INITIAL_ACHATS);
 let finance  = loadData('finance', INITIAL_FINANCE);
 if (!finance.charges) finance.charges = INITIAL_FINANCE.charges;
-if (!finance.tresorerie) finance.tresorerie = INITIAL_FINANCE.tresorerie;
+if (!finance.virements) finance.virements = [];
 
 // ══════════════════════════════════════
 // 3. CALCULS MÉTIER
@@ -1266,6 +1272,55 @@ function saveAchat(e) {
 // 8. FINANCE
 // ══════════════════════════════════════
 
+
+// ══════════════════════════════════════
+// ★ TRÉSORERIE — Nouvelle logique
+// CA net cumulé toutes périodes par plateforme :
+//   Vinted/Direct = CA brut (pas de frais prélevés)
+//   TikTok        = CA brut - 9% commission
+//   Site          = CA brut - frais paiement - frais livraison
+// Virements = journal cumulatif, chaque virement est indépendant
+// ══════════════════════════════════════
+
+function calcCaNetCumul(plateforme) {
+  return ventes
+    .filter(v => v.plateforme === plateforme && v.type !== 'Retour')
+    .reduce((s, v) => {
+      const c = calcVente(v, ventes.indexOf(v));
+      return c ? s + c.ca - c.fraisPlat - c.fraisLivr : s;
+    }, 0);
+}
+
+function totalVirementsRecus(plateforme) {
+  return (finance.virements || [])
+    .filter(vir => vir.plateforme === plateforme)
+    .reduce((s, vir) => s + (vir.montant || 0), 0);
+}
+
+function addVirement(plateforme, montant, date, note) {
+  const m = parseFloat(montant) || 0;
+  if (!m || m <= 0) { showToast('Montant invalide'); return; }
+  if (!finance.virements) finance.virements = [];
+  finance.virements.push({
+    id: 'vir-' + Date.now(),
+    date: date || new Date().toISOString().split('T')[0],
+    plateforme,
+    montant: m,
+    note: note || ''
+  });
+  saveData('finance', finance);
+  renderFinance();
+  showToast('Virement ' + plateforme + ' ' + fmt(m) + ' enregistré ✓');
+}
+
+function deleteVirement(id) {
+  if (!confirm('Supprimer ce virement ?')) return;
+  finance.virements = (finance.virements || []).filter(v => v.id !== id);
+  saveData('finance', finance);
+  renderFinance();
+  showToast('Virement supprimé');
+}
+
 function renderFinance() {
   const mois = getCurrentMonth();
   const ventesmois = ventes.filter(v => v.date && v.date.startsWith(mois));
@@ -1296,7 +1351,33 @@ function renderFinance() {
   const plats = ['vinted','tiktok','site','direct'];
   const platLabels = ['Vinted','TikTok','Site Oudyssia','Direct'];
   const platKeys = ['Vinted','TikTok','Site Oudyssia','Direct'];
-  document.getElementById('finance-tresorerie').innerHTML = plats.map((k,i) => { const caP = ventes.filter(v=>v.plateforme===platKeys[i]&&v.type!=='Retour').reduce((s,v)=>s+v.prix*v.qte,0); const solde = caP - (finance.tresorerie[k]||0); return `<div class="finance-row"><span class="finance-label sub">${platLabels[i]} virement</span><input class="finance-input" type="number" value="${finance.tresorerie[k]||0}" step="0.01" onchange="updateTresorerie('${k}', this.value)"></div><div class="finance-row" style="padding:4px 18px"><span class="finance-label" style="font-size:10px;padding-left:20px">→ Solde ${platLabels[i]}</span><span class="finance-value" style="font-size:11px;color:${solde>0?'#81C784':'#E57373'}">${fmt(solde)}</span></div>`; }).join('') + `<div class="finance-row total"><span class="finance-label">Total à encaisser</span><span class="finance-value positive">${fmt(plats.reduce((s,k,i) => { const caP = ventes.filter(v=>v.plateforme===platKeys[i]&&v.type!=='Retour').reduce((a,v)=>a+v.prix*v.qte,0); return s + caP - (finance.tresorerie[k]||0); }, 0))}</span></div>`;
+  // ★ TRÉSORERIE CORRIGÉE : CA net + journal de virements
+  const platKeys2   = ['Vinted','TikTok','Site Oudyssia','Direct'];
+  const platLabels2 = ['Vinted','TikTok','Site Oudyssia','Direct'];
+  let tresoHTML = '';
+  let totalAEncaisser = 0;
+  platKeys2.forEach((platKey, i) => {
+    const caNet     = Math.round(calcCaNetCumul(platKey) * 100) / 100;
+    const totalRecu = Math.round(totalVirementsRecus(platKey) * 100) / 100;
+    const solde     = Math.round((caNet - totalRecu) * 100) / 100;
+    totalAEncaisser += solde;
+    const virsPlat  = (finance.virements || []).filter(v => v.plateforme === platKey).sort((a,b) => b.date.localeCompare(a.date));
+    tresoHTML += `<div class="treso-plat-block" style="margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid rgba(255,255,255,0.06)">
+      <div class="finance-row"><span class="finance-label" style="font-weight:600;color:var(--gold)">${platLabels2[i]}</span><span class="finance-value" style="font-size:11px;color:#6B6560">CA net cumulé: ${fmt(caNet)}</span></div>
+      <div class="finance-row"><span class="finance-label sub">Total reçu</span><span class="finance-value ${totalRecu>0?'positive':''}">${fmt(totalRecu)}</span></div>
+      <div class="finance-row" style="margin-bottom:8px"><span class="finance-label sub">→ Solde restant</span><span class="finance-value" style="color:${solde>0?'#81C784':'#E57373'};font-weight:600">${fmt(solde)}</span></div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
+        <input type="date" id="vir-date-${i}" value="${new Date().toISOString().split('T')[0]}" class="finance-input" style="width:120px">
+        <input type="number" id="vir-montant-${i}" placeholder="Montant €" class="finance-input" style="width:90px" step="0.01">
+        <input type="text" id="vir-note-${i}" placeholder="Note (optionnel)" class="finance-input" style="flex:1;min-width:80px">
+        <button class="btn-vir-add" onclick="addVirement('${platKey}',document.getElementById('vir-montant-${i}').value,document.getElementById('vir-date-${i}').value,document.getElementById('vir-note-${i}').value)" style="padding:6px 12px;background:var(--gold);color:#0d0d0f;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap">+ Virement</button>
+      </div>
+      ${virsPlat.length ? `<div style="display:flex;flex-direction:column;gap:4px">${virsPlat.map(vir=>`<div style="display:flex;justify-content:space-between;align-items:center;font-size:11px;padding:4px 8px;background:rgba(255,255,255,0.03);border-radius:4px"><span style="color:#6B6560">${vir.date}</span><span style="flex:1;margin:0 8px;color:#9A9080">${vir.note||'—'}</span><span style="color:#81C784;font-weight:600">${fmt(vir.montant)}</span><button onclick="deleteVirement('${vir.id}')" style="margin-left:8px;background:rgba(214,92,92,0.2);color:#d65c5c;border:none;border-radius:4px;padding:2px 6px;cursor:pointer;font-size:10px">✕</button></div>`).join('')}</div>` : ''}
+    </div>`;
+  });
+  tresoHTML += `<div class="finance-row total"><span class="finance-label">💰 Total encore à encaisser</span><span class="finance-value positive" style="font-weight:700">${fmt(Math.round(totalAEncaisser*100)/100)}</span></div>`;
+  document.getElementById('finance-tresorerie').innerHTML = tresoHTML;
+
   const ctx = document.getElementById('chart-plateformes-finance');
   if (charts.finplat) charts.finplat.destroy();
   charts.finplat = new Chart(ctx, { type: 'bar', data: { labels: ['Vinted','Site','TikTok','Direct'], datasets: [{label:'CA',data:[caVinted,caSite,caTiktok,caDirect],backgroundColor:'rgba(200,169,81,0.5)',borderColor:'#C8A951',borderWidth:1,borderRadius:4}] }, options: chartOptions('€') });
@@ -1304,7 +1385,6 @@ function renderFinance() {
 
 function updateCharge(key, val) { finance.charges[key] = parseFloat(val)||0; saveData('finance', finance); renderFinance(); }
 function updateObjectif(val) { finance.objectif = parseFloat(val)||0; saveData('finance', finance); renderFinance(); }
-function updateTresorerie(key, val) { finance.tresorerie[key] = parseFloat(val)||0; saveData('finance', finance); renderFinance(); }
 
 // ══════════════════════════════════════
 // 9. RÉASSORTS
