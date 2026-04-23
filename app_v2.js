@@ -295,7 +295,10 @@ function calcFraisPlat(prix, plateforme, moyen_paiement, numCommande, allLinesCm
 function calcVente(v, index) {
   const p = getProduct(v.sku);
   if (!p) return null;
-  const prixAchat = p.achat || 0;
+  // ✅ Prix achat figé à la date de la vente — insensible aux modifications futures du produit
+  const prixAchat = (v.prix_achat_snapshot !== undefined && v.prix_achat_snapshot !== null)
+    ? v.prix_achat_snapshot
+    : (p.achat || 0);
   const ca = v.type === 'Retour' ? -(v.prix * v.qte) : v.prix * v.qte;
   const margeB = v.type === 'Retour' ? -(v.prix * v.qte - prixAchat * v.qte) : (v.prix - prixAchat) * v.qte;
   let fraisPlat = 0;
@@ -1155,12 +1158,14 @@ function saveCmdGroupee(e) {
   }
 
   validLines.forEach((line, i) => {
+    const _pLine = getProduct(line.sku);
     ventes.push({
       date,
       sku: line.sku,
       plateforme: plat,
       qte: line.qte || 1,
       prix: line.prix,
+      prix_achat_snapshot: _pLine ? (_pLine.achat || 0) : 0, // ✅ figé à aujourd'hui
       moyen_paiement: plat === 'Site Oudyssia' ? pmt : '',
       type,
       num_commande: isGrouped ? numCmd : '',
@@ -1218,7 +1223,13 @@ function saveVente(e) {
   const qte = parseInt(document.getElementById('v-qte').value)||1;
   const prix = parseFloat(document.getElementById('v-prix').value)||0;
   if (!sku || !date || !prix) return;
-  ventes.push({ date, sku, plateforme:plat, qte, prix, moyen_paiement:document.getElementById('v-paiement').value, type:document.getElementById('v-type').value, num_commande:document.getElementById('v-commande').value.trim(), frais_livraison_reels:parseFloat(document.getElementById('v-livraison-reels').value)||0 });
+  const _p2 = getProduct(sku);
+  ventes.push({ date, sku, plateforme:plat, qte, prix,
+    prix_achat_snapshot: _p2 ? (_p2.achat || 0) : 0, // ✅ figé à aujourd'hui
+    moyen_paiement:document.getElementById('v-paiement').value,
+    type:document.getElementById('v-type').value,
+    num_commande:document.getElementById('v-commande').value.trim(),
+    frais_livraison_reels:parseFloat(document.getElementById('v-livraison-reels').value)||0 });
   saveData('ventes', ventes);
   closeModal();
   renderVentes();
@@ -1333,7 +1344,12 @@ function renderFinance() {
   document.getElementById('finance-ca').innerHTML = `<div class="finance-row main-total"><span class="finance-label">CA Total</span><span class="finance-value big">${fmt(caTotal)}</span></div><div class="finance-row"><span class="finance-label sub">· Vinted</span><span class="finance-value">${fmt(caVinted)}</span></div><div class="finance-row"><span class="finance-label sub">· Site Oudyssia</span><span class="finance-value">${fmt(caSite)}</span></div><div class="finance-row"><span class="finance-label sub">· TikTok</span><span class="finance-value">${fmt(caTiktok)}</span></div><div class="finance-row"><span class="finance-label sub">· Direct</span><span class="finance-value">${fmt(caDirect)}</span></div>`;
   const achatsMoisVal = achatsMois.reduce((s,a)=>s+a.montant,0);
   const achatsCumul = achats.reduce((s,a)=>s+a.montant,0);
-  const coutVentes = ventesmois.filter(v=>v.type!=='Retour').reduce((s,v)=>{ const p = getProduct(v.sku); return s + (p?p.achat*v.qte:0); }, 0);
+  const coutVentes = ventesmois.filter(v=>v.type!=='Retour').reduce((s,v)=>{
+    const achat = (v.prix_achat_snapshot !== undefined && v.prix_achat_snapshot !== null)
+      ? v.prix_achat_snapshot
+      : (getProduct(v.sku)?.achat || 0);
+    return s + achat * v.qte;
+  }, 0);
   document.getElementById('finance-achats').innerHTML = `<div class="finance-row main-total"><span class="finance-label">Achats ce mois</span><span class="finance-value big">${fmt(achatsMoisVal)}</span></div><div class="finance-row"><span class="finance-label sub">· Cumulés</span><span class="finance-value">${fmt(achatsCumul)}</span></div><div class="finance-row"><span class="finance-label sub">· Coût des ventes</span><span class="finance-value">${fmt(coutVentes)}</span></div>`;
   const margeB = caTotal - coutVentes;
   const margeBP = caTotal > 0 ? margeB/caTotal : 0;
